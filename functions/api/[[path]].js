@@ -214,8 +214,11 @@ export async function onRequest(context) {
       const cobrancas = await env.DB.prepare(
         `SELECT p.id,p.numero,p.total,p.valor,p.moeda,p.vencimento,p.pago,
                 pa.id paciente_id, pa.nome, pa.apelido, pa.cod, pa.telefone
-           FROM parcelas p JOIN pacientes pa ON pa.id=p.paciente_id
+           FROM parcelas p
+           JOIN pacientes pa ON pa.id=p.paciente_id
+           JOIN contratos c  ON c.id=p.contrato_id
           WHERE p.status IN ('aberta','parcial') AND p.vencimento <= ?
+            AND c.status='ativo' AND pa.status NOT IN ('encerrado','parceria')
           ORDER BY p.vencimento ASC LIMIT 100`).bind(em7).all();
 
       const listaCob = (cobrancas.results || []).map((r) => ({
@@ -252,8 +255,13 @@ export async function onRequest(context) {
         `SELECT status, COUNT(*) c FROM pacientes GROUP BY status`).all();
 
       const aReceber = await env.DB.prepare(
-        `SELECT moeda, SUM(valor - pago) total, COUNT(*) qtd
-           FROM parcelas WHERE status IN ('aberta','parcial') GROUP BY moeda`).all();
+        `SELECT p.moeda, SUM(p.valor - p.pago) total, COUNT(*) qtd
+           FROM parcelas p
+           JOIN contratos c ON c.id=p.contrato_id
+           JOIN pacientes pa ON pa.id=p.paciente_id
+          WHERE p.status IN ('aberta','parcial') AND c.status='ativo'
+            AND pa.status NOT IN ('encerrado','parceria')
+          GROUP BY p.moeda`).all();
 
       const mesAtual = h.slice(0, 7);
       const recebido = await env.DB.prepare(
@@ -323,7 +331,9 @@ export async function onRequest(context) {
                    (SELECT codigo_plano FROM contratos WHERE paciente_id=pa.id ORDER BY id DESC LIMIT 1) plano_atual,
                    (SELECT data_final   FROM contratos WHERE paciente_id=pa.id ORDER BY id DESC LIMIT 1) data_final,
                    (SELECT MAX(data)    FROM consultas WHERE paciente_id=pa.id) ultima_consulta,
-                   (SELECT COUNT(*) FROM parcelas WHERE paciente_id=pa.id AND status IN ('aberta','parcial')) parcelas_abertas
+                   (SELECT COUNT(*) FROM parcelas p JOIN contratos c ON c.id=p.contrato_id
+                     WHERE p.paciente_id=pa.id AND p.status IN ('aberta','parcial')
+                       AND c.status='ativo') parcelas_abertas
                  FROM pacientes pa WHERE 1=1`;
       const args = [];
       if (q) { sql += ' AND (pa.nome LIKE ? OR pa.apelido LIKE ? OR pa.cod LIKE ? OR pa.email LIKE ? OR pa.telefone LIKE ?)';
@@ -502,8 +512,12 @@ export async function onRequest(context) {
       const filtro = url.searchParams.get('filtro') || 'abertas';
       const h = hoje();
       let sql = `SELECT p.*, pa.nome,pa.apelido,pa.cod,pa.telefone,pa.pais
-                   FROM parcelas p JOIN pacientes pa ON pa.id=p.paciente_id WHERE 1=1`;
+                   FROM parcelas p
+                   JOIN pacientes pa ON pa.id=p.paciente_id
+                   JOIN contratos c  ON c.id=p.contrato_id
+                  WHERE 1=1`;
       const args = [];
+      if (filtro !== 'pagas') sql += " AND c.status='ativo' AND pa.status NOT IN ('encerrado','parceria')";
       if (filtro === 'abertas') sql += " AND p.status IN ('aberta','parcial')";
       if (filtro === 'atrasadas') { sql += " AND p.status IN ('aberta','parcial') AND p.vencimento < ?"; args.push(h); }
       if (filtro === 'pagas') sql += " AND p.status='paga'";
@@ -606,8 +620,13 @@ export async function onRequest(context) {
         `SELECT substr(data,1,7) mes, moeda, SUM(valor) total, SUM(valor_brl) total_brl
            FROM pagamentos GROUP BY mes, moeda ORDER BY mes DESC LIMIT 60`).all();
       const aReceber = await env.DB.prepare(
-        `SELECT moeda, SUM(valor-pago) total, COUNT(*) qtd FROM parcelas
-          WHERE status IN ('aberta','parcial') GROUP BY moeda`).all();
+        `SELECT p.moeda, SUM(p.valor-p.pago) total, COUNT(*) qtd
+           FROM parcelas p
+           JOIN contratos c ON c.id=p.contrato_id
+           JOIN pacientes pa ON pa.id=p.paciente_id
+          WHERE p.status IN ('aberta','parcial') AND c.status='ativo'
+            AND pa.status NOT IN ('encerrado','parceria')
+          GROUP BY p.moeda`).all();
       const porPlano = await env.DB.prepare(
         `SELECT codigo_plano, COUNT(*) qtd, SUM(valor_cobrado) total, moeda
            FROM contratos GROUP BY codigo_plano, moeda ORDER BY qtd DESC`).all();
@@ -709,6 +728,14 @@ export async function onRequest(context) {
                 'importado da planilha').run();
               resta -= aplica;
             }
+          }
+
+          // Contrato que já acabou não gera cobrança. O saldo que sobrou é
+          // histórico (desconto, acerto por fora), não dívida a perseguir.
+          if (c.status !== 'ativo') {
+            await env.DB.prepare(
+              `UPDATE parcelas SET status='cancelada'
+                WHERE contrato_id=? AND status IN ('aberta','parcial')`).bind(c.id).run();
           }
           contratos++;
         }
