@@ -325,24 +325,39 @@ export async function onRequest(context) {
       const objetivo = url.searchParams.get('objetivo') || '';
       const pais = url.searchParams.get('pais') || '';
       const plano = url.searchParams.get('plano') || '';
-      const limite = Math.min(500, Number(url.searchParams.get('limite') || 200));
+      const limite = Math.min(2000, Number(url.searchParams.get('limite') || 1000));
 
-      let sql = `SELECT pa.*,
-                   (SELECT codigo_plano FROM contratos WHERE paciente_id=pa.id ORDER BY id DESC LIMIT 1) plano_atual,
-                   (SELECT data_final   FROM contratos WHERE paciente_id=pa.id ORDER BY id DESC LIMIT 1) data_final,
-                   (SELECT MAX(data)    FROM consultas WHERE paciente_id=pa.id) ultima_consulta,
-                   (SELECT COUNT(*) FROM parcelas p JOIN contratos c ON c.id=p.contrato_id
-                     WHERE p.paciente_id=pa.id AND p.status IN ('aberta','parcial')
-                       AND c.status='ativo') parcelas_abertas
-                 FROM pacientes pa WHERE 1=1`;
+      // Uma passada por tabela em vez de subconsulta por linha: com algumas
+      // centenas de pacientes a diferença é de segundos para milissegundos.
+      let sql = `
+        SELECT pa.id, pa.cod, pa.nome, pa.apelido, pa.pais, pa.telefone, pa.email,
+               pa.objetivo, pa.status,
+               c.codigo_plano  AS plano_atual,
+               c.data_final    AS data_final,
+               uc.ultima_consulta,
+               COALESCE(ab.abertas, 0) AS parcelas_abertas
+          FROM pacientes pa
+          LEFT JOIN (SELECT paciente_id, MAX(id) AS mid FROM contratos GROUP BY paciente_id) lc
+                 ON lc.paciente_id = pa.id
+          LEFT JOIN contratos c ON c.id = lc.mid
+          LEFT JOIN (SELECT paciente_id, MAX(data) AS ultima_consulta
+                       FROM consultas GROUP BY paciente_id) uc
+                 ON uc.paciente_id = pa.id
+          LEFT JOIN (SELECT p.paciente_id, COUNT(*) AS abertas
+                       FROM parcelas p
+                       JOIN contratos c2 ON c2.id = p.contrato_id
+                      WHERE p.status IN ('aberta','parcial') AND c2.status='ativo'
+                      GROUP BY p.paciente_id) ab
+                 ON ab.paciente_id = pa.id
+         WHERE 1=1`;
       const args = [];
       if (q) { sql += ' AND (pa.nome LIKE ? OR pa.apelido LIKE ? OR pa.cod LIKE ? OR pa.email LIKE ? OR pa.telefone LIKE ?)';
         const like = `%${q}%`; args.push(like, like, like, like, like); }
       if (status) { sql += ' AND pa.status=?'; args.push(status); }
       if (objetivo) { sql += ' AND pa.objetivo LIKE ?'; args.push(`%${objetivo}%`); }
       if (pais) { sql += ' AND pa.pais=?'; args.push(pais); }
-      if (plano) { sql += ' AND plano_atual=?'; args.push(plano); }
-      sql += ' ORDER BY pa.nome ASC LIMIT ?'; args.push(limite);
+      if (plano) { sql += ' AND c.codigo_plano=?'; args.push(plano); }
+      sql += ' ORDER BY pa.nome COLLATE NOCASE ASC LIMIT ?'; args.push(limite);
 
       const r = await env.DB.prepare(sql).bind(...args).all();
       return json({ pacientes: r.results || [] });
