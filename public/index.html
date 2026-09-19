@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>CRM — Luca Ternes</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230F2438'/><text x='50' y='68' font-size='52' font-family='Georgia' fill='%23C9A227' text-anchor='middle'>LT</text></svg>">
+<style>
+:root{
+  --navy:#0F2438; --navy-2:#173350; --navy-3:#1E4062;
+  --ouro:#C9A227; --ouro-claro:#E4C25C;
+  --bg:#F4F6F9; --card:#fff; --linha:#E2E7EE;
+  --txt:#12202F; --txt-2:#5A6B7D;
+  --ok:#1E8E5A; --alerta:#C77700; --erro:#C0392B;
+  --r:12px; --sombra:0 1px 3px rgba(16,36,56,.08),0 8px 24px rgba(16,36,56,.06);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif;font-size:15px}
+h1,h2,h3{margin:0 0 4px;font-weight:650;letter-spacing:-.01em}
+a{color:var(--navy-3)}
+button{font:inherit;cursor:pointer}
+input,select,textarea{font:inherit;width:100%;padding:9px 11px;border:1px solid var(--linha);
+  border-radius:9px;background:#fff;color:var(--txt)}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--navy-3);outline-offset:-1px;border-color:transparent}
+textarea{resize:vertical;min-height:62px}
+label{display:block;font-size:12px;font-weight:600;color:var(--txt-2);margin:0 0 4px}
+.hide{display:none!important}
+
+/* ---------- login ---------- */
+#login{min-height:100vh;display:grid;place-items:center;background:
+  radial-gradient(900px 500px at 50% -10%,var(--navy-3),var(--navy)) ,var(--navy);padding:20px}
+.login-box{width:100%;max-width:380px;background:#fff;border-radius:16px;padding:30px 26px;box-shadow:var(--sombra)}
+.logo{width:64px;height:64px;border-radius:16px;background:var(--navy);color:var(--ouro);
+  display:grid;place-items:center;font-family:Georgia,serif;font-size:26px;margin:0 auto 14px}
+
+/* ---------- layout ---------- */
+#app{display:grid;grid-template-columns:232px 1fr;min-height:100vh}
+aside{background:var(--navy);color:#fff;padding:18px 12px;position:sticky;top:0;height:100vh;overflow:auto}
+.marca{display:flex;align-items:center;gap:10px;padding:0 6px 16px;border-bottom:1px solid rgba(255,255,255,.12);margin-bottom:12px}
+.marca div:first-child{width:38px;height:38px;border-radius:10px;background:rgba(201,162,39,.16);
+  color:var(--ouro);display:grid;place-items:center;font-family:Georgia,serif;font-size:17px;flex:none}
+.marca b{display:block;font-size:14px}
+.marca span{font-size:11px;color:rgba(255,255,255,.55)}
+nav button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:none;border:0;
+  color:rgba(255,255,255,.76);padding:10px 12px;border-radius:9px;font-size:14px;margin-bottom:2px}
+nav button:hover{background:rgba(255,255,255,.07);color:#fff}
+nav button.on{background:var(--ouro);color:var(--navy);font-weight:650}
+nav button .bd{margin-left:auto;background:var(--erro);color:#fff;border-radius:99px;
+  font-size:11px;font-weight:700;padding:1px 7px}
+nav button.on .bd{background:var(--navy);color:#fff}
+main{padding:22px 26px 60px;max-width:1280px}
+.topo{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+.topo p{margin:2px 0 0;color:var(--txt-2);font-size:13px}
+.topo .dir{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+
+/* ---------- componentes ---------- */
+.card{background:var(--card);border:1px solid var(--linha);border-radius:var(--r);
+  padding:16px;box-shadow:var(--sombra)}
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+.btn{background:var(--navy);color:#fff;border:0;border-radius:9px;padding:9px 15px;font-weight:600;font-size:14px}
+.btn:hover{background:var(--navy-3)}
+.btn.ouro{background:var(--ouro);color:var(--navy)}
+.btn.ghost{background:#fff;color:var(--navy);border:1px solid var(--linha)}
+.btn.zap{background:#20a45a;color:#fff}
+.btn.mini{padding:5px 10px;font-size:12.5px;border-radius:7px}
+.btn.perigo{background:#fff;color:var(--erro);border:1px solid #f0c8c3}
+.kpi{background:var(--card);border:1px solid var(--linha);border-radius:var(--r);padding:14px 16px}
+.kpi b{display:block;font-size:26px;letter-spacing:-.02em;line-height:1.15}
+.kpi span{font-size:12px;color:var(--txt-2);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+.tag{display:inline-block;font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:99px;
+  background:#EDF1F6;color:var(--txt-2);white-space:nowrap}
+.tag.ativo{background:#E3F3EA;color:var(--ok)}
+.tag.devendo{background:#FCECE9;color:var(--erro)}
+.tag.encerrado{background:#EDF1F6;color:var(--txt-2)}
+.tag.parceria{background:#FBF0D6;color:#8A6D12}
+.tag.lead{background:#E6EEF8;color:var(--navy-3)}
+.tag.atrasada{background:#FCECE9;color:var(--erro)}
+.tag.hoje{background:#FDF0DC;color:var(--alerta)}
+.tag.proxima{background:#EDF1F6;color:var(--txt-2)}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--txt-2);
+  padding:9px 10px;border-bottom:1px solid var(--linha);white-space:nowrap}
+td{padding:11px 10px;border-bottom:1px solid var(--linha);vertical-align:middle}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:#FAFCFE}
+.cod{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;font-weight:700;color:var(--navy-3);
+  background:#EEF3F9;padding:2px 7px;border-radius:6px}
+.apelido{color:var(--ouro);font-size:12.5px;font-style:italic}
+.vazio{text-align:center;color:var(--txt-2);padding:30px 14px;font-size:14px}
+.linha-aviso{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--linha)}
+.linha-aviso:last-child{border-bottom:0}
+.linha-aviso .txt{flex:1;min-width:0}
+.linha-aviso .txt b{display:block;font-size:14px}
+.linha-aviso .txt small{color:var(--txt-2);font-size:12.5px}
+
+/* ---------- modal ---------- */
+.modal{position:fixed;inset:0;background:rgba(12,24,38,.5);display:grid;place-items:center;
+  padding:18px;z-index:60;overflow:auto}
+.modal-box{background:#fff;border-radius:14px;width:100%;max-width:720px;max-height:92vh;overflow:auto;
+  box-shadow:0 24px 60px rgba(0,0,0,.28)}
+.modal-topo{position:sticky;top:0;background:#fff;padding:16px 20px;border-bottom:1px solid var(--linha);
+  display:flex;align-items:center;gap:10px;z-index:2}
+.modal-topo h3{flex:1}
+.modal-corpo{padding:18px 20px}
+.modal-pe{position:sticky;bottom:0;background:#fff;padding:13px 20px;border-top:1px solid var(--linha);
+  display:flex;gap:8px;justify-content:flex-end}
+.x{background:none;border:0;font-size:22px;color:var(--txt-2);line-height:1;padding:0 4px}
+
+/* ---------- ficha de consulta (caderno) ---------- */
+.caderno{background:#fff;border:1px solid var(--linha);border-radius:10px;padding:18px}
+.caderno .cab{display:grid;grid-template-columns:2fr 1fr;gap:12px;padding-bottom:12px;
+  border-bottom:2px solid var(--navy);margin-bottom:6px}
+.refeicao{border-bottom:1px solid var(--linha);padding:12px 0}
+.refeicao .rot{display:flex;align-items:center;gap:9px;margin-bottom:6px}
+.refeicao .rot b{font-size:12.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--navy);
+  border-left:3px solid var(--ouro);padding-left:8px}
+.refeicao .rot input[type=time]{width:110px;flex:none}
+.abas{display:flex;gap:6px;border-bottom:1px solid var(--linha);margin-bottom:14px;overflow-x:auto}
+.abas button{background:none;border:0;padding:9px 13px;font-size:13.5px;font-weight:600;color:var(--txt-2);
+  border-bottom:2px solid transparent;white-space:nowrap}
+.abas button.on{color:var(--navy);border-bottom-color:var(--ouro)}
+.filtros{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px}
+.filtros > div{min-width:150px}
+.filtros .busca{flex:1;min-width:220px}
+.barra-peso{height:6px;background:var(--linha);border-radius:99px;overflow:hidden;margin-top:6px}
+.barra-peso i{display:block;height:100%;background:var(--ouro)}
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(90px);
+  background:var(--navy);color:#fff;padding:11px 20px;border-radius:99px;font-size:14px;font-weight:600;
+  box-shadow:0 10px 30px rgba(0,0,0,.25);transition:transform .22s;z-index:90;max-width:90vw}
+#toast.on{transform:translateX(-50%) translateY(0)}
+
+@media(max-width:1000px){.g4{grid-template-columns:repeat(2,1fr)}.g3{grid-template-columns:1fr}}
+@media(max-width:860px){
+  #app{grid-template-columns:1fr}
+  aside{position:static;height:auto;display:flex;gap:8px;overflow-x:auto;padding:10px}
+  .marca{display:none}
+  nav{display:flex;gap:6px}
+  nav button{width:auto;white-space:nowrap;padding:8px 13px}
+  main{padding:16px 14px 50px}
+  .g2,.g4{grid-template-columns:1fr}
+  .caderno .cab{grid-template-columns:1fr}
+  table{font-size:13px}
+  th,td{padding:8px 6px}
+}
+@media print{
+  aside,.abas,.topo .dir,.modal-pe,.btn{display:none!important}
+  body{background:#fff}#app{grid-template-columns:1fr}
+  .modal{position:static;background:none;padding:0}
+  .modal-box{max-width:100%;box-shadow:none}
+}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<section id="login">
+  <div class="login-box">
+    <div class="logo">LT</div>
+    <h2 style="text-align:center">CRM Luca Ternes</h2>
+    <p style="text-align:center;color:var(--txt-2);font-size:13px;margin:0 0 18px">Consultorias · Brasil e Estados Unidos</p>
+    <div id="setupAviso" class="hide" style="background:#FBF0D6;color:#8A6D12;padding:10px 12px;border-radius:9px;font-size:13px;margin-bottom:14px">
+      Primeiro acesso: crie o usuário administrador.
+    </div>
+    <div style="margin-bottom:10px" id="wrapNome" class="hide">
+      <label>Nome</label><input id="inNome" placeholder="Luca Ternes">
+    </div>
+    <div style="margin-bottom:10px">
+      <label>E-mail</label><input id="inEmail" type="email" autocomplete="username">
+    </div>
+    <div style="margin-bottom:16px">
+      <label>Senha</label><input id="inSenha" type="password" autocomplete="current-password">
+    </div>
+    <button class="btn" style="width:100%" id="btnEntrar">Entrar</button>
+    <p id="loginErro" style="color:var(--erro);font-size:13px;text-align:center;margin:12px 0 0"></p>
+  </div>
+</section>
+
+<!-- APP -->
+<div id="app" class="hide">
+  <aside>
+    <div class="marca">
+      <div>LT</div>
+      <div><b>Luca Ternes</b><span>CRM de consultorias</span></div>
+    </div>
+    <nav id="nav">
+      <button data-tela="home" class="on">Início <span class="bd hide" id="bdHome"></span></button>
+      <button data-tela="pacientes">Pacientes</button>
+      <button data-tela="agenda">Agenda</button>
+      <button data-tela="financeiro">Financeiro</button>
+      <button data-tela="planos">Planos</button>
+      <button data-tela="config">Configurações</button>
+    </nav>
+    <button class="btn ghost mini" id="btnSair" style="margin-top:14px;width:100%">Sair</button>
+  </aside>
+  <main id="tela"></main>
+</div>
+
+<div id="toast"></div>
+<script src="/app.js?v=1"></script>
+</body>
+</html>
