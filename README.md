@@ -5,7 +5,7 @@ Cloudflare Pages + Pages Functions + D1. Sem CLI: tudo pelo navegador.
 
 ## Como subir
 
-**1. Criar o repositório no GitHub**
+**1. Criar o repositório no GitHub** 
 Suba estes arquivos mantendo a estrutura:
 
 ```
