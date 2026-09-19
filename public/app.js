@@ -202,7 +202,10 @@ async function telaPacientes() {
   $('#tela').innerHTML = `
     <div class="topo">
       <div><h1>Pacientes</h1><p id="pacContagem">Carregando…</p></div>
-      <div class="dir"><button class="btn ouro" onclick="abrirPaciente()">+ Paciente</button></div>
+      <div class="dir">
+        <button class="btn ghost" onclick="carregarPacientes(true)">Atualizar</button>
+        <button class="btn ouro" onclick="abrirPaciente()">+ Paciente</button>
+      </div>
     </div>
     <div class="filtros">
       <div class="busca"><label>Buscar por código, nome ou apelido</label>
@@ -223,18 +226,41 @@ async function telaPacientes() {
     </div>
     <div class="card" style="padding:0;overflow:auto"><div id="tabelaPac"></div></div>`;
 
-  const deb = (fn, ms = 300) => { let t; return () => { clearTimeout(t); t = setTimeout(fn, ms); }; };
-  $('#fQ').oninput = deb(() => { FILTRO.q = $('#fQ').value; carregarPacientes(); });
-  $('#fStatus').onchange = () => { FILTRO.status = $('#fStatus').value; carregarPacientes(); };
-  $('#fObj').onchange = () => { FILTRO.objetivo = $('#fObj').value; carregarPacientes(); };
-  $('#fPais').onchange = () => { FILTRO.pais = $('#fPais').value; carregarPacientes(); };
+  // filtro roda no navegador: sem ida ao servidor a cada tecla
+  $('#fQ').oninput = () => { FILTRO.q = $('#fQ').value; pintarPacientes(); };
+  $('#fStatus').onchange = () => { FILTRO.status = $('#fStatus').value; pintarPacientes(); };
+  $('#fObj').onchange = () => { FILTRO.objetivo = $('#fObj').value; pintarPacientes(); };
+  $('#fPais').onchange = () => { FILTRO.pais = $('#fPais').value; pintarPacientes(); };
   carregarPacientes();
 }
 
-async function carregarPacientes() {
-  const p = new URLSearchParams(Object.entries(FILTRO).filter(([, v]) => v));
-  const { pacientes } = await api('/pacientes?' + p);
-  $('#pacContagem').textContent = `${pacientes.length} paciente${pacientes.length === 1 ? '' : 's'}`;
+// busca no servidor só quando precisa (primeira vez ou depois de salvar)
+async function carregarPacientes(forcar) {
+  if (!CACHE.pacientes || forcar) {
+    if ($('#tabelaPac')) $('#tabelaPac').innerHTML = '<p class="vazio">Carregando…</p>';
+    CACHE.pacientes = (await api('/pacientes')).pacientes;
+  }
+  pintarPacientes();
+}
+
+function pintarPacientes() {
+  if (!$('#tabelaPac')) return;
+  const f = FILTRO;
+  const q = f.q.trim().toLowerCase();
+  const pacientes = (CACHE.pacientes || []).filter((x) => {
+    if (f.status && x.status !== f.status) return false;
+    if (f.pais && x.pais !== f.pais) return false;
+    if (f.objetivo && !(x.objetivo || '').includes(f.objetivo)) return false;
+    if (!q) return true;
+    return [x.nome, x.apelido, x.cod, x.email, x.telefone]
+      .some((v) => (v || '').toString().toLowerCase().includes(q));
+  });
+
+  const total = (CACHE.pacientes || []).length;
+  $('#pacContagem').textContent = pacientes.length === total
+    ? `${total} paciente${total === 1 ? '' : 's'}`
+    : `${pacientes.length} de ${total} pacientes`;
+
   $('#tabelaPac').innerHTML = !pacientes.length
     ? '<p class="vazio">Nenhum paciente com esses filtros.</p>'
     : `<table><thead><tr>
@@ -419,7 +445,7 @@ async function formPaciente(id) {
     try {
       if (id) await api('/pacientes/' + id, { method: 'PUT', body });
       else await api('/pacientes', { method: 'POST', body });
-      fecharModal(); toast('Paciente salvo'); if (TELA === 'pacientes') carregarPacientes(); else telaHome();
+      fecharModal(); toast('Paciente salvo'); if (TELA === 'pacientes') carregarPacientes(true); else telaHome();
     } catch (e) { toast(e.message); }
   };
 }
@@ -427,7 +453,7 @@ async function formPaciente(id) {
 async function excluirPaciente(id) {
   if (!confirm('Excluir este paciente e todo o histórico dele? Não dá para desfazer.')) return;
   await api('/pacientes/' + id, { method: 'DELETE' });
-  fecharModal(); toast('Paciente excluído'); carregarPacientes();
+  fecharModal(); toast('Paciente excluído'); carregarPacientes(true);
 }
 
 /* ==========================================================
@@ -505,7 +531,7 @@ async function abrirConsulta(pacienteId, consultaId) {
       if (consultaId) await api('/consultas/' + consultaId, { method: 'PUT', body });
       else await api('/consultas', { method: 'POST', body });
       fecharModal(); toast('Ficha salva');
-      if (TELA === 'pacientes') carregarPacientes(); else if (TELA === 'home') telaHome();
+      if (TELA === 'pacientes') carregarPacientes(true); else if (TELA === 'home') telaHome();
     } catch (e) { toast(e.message); }
   };
 }
@@ -617,7 +643,7 @@ async function abrirPagamento(pacienteId, parcelaId, valor, moeda) {
         valor: $('#gValor').value, moeda: $('#gMoeda').value, cotacao: $('#gCot').value,
         forma: $('#gForma').value, obs: $('#gObs').value } });
       fecharModal(); toast('Pagamento registrado');
-      if (TELA === 'home') telaHome(); else if (TELA === 'financeiro') telaFinanceiro(); else carregarPacientes();
+      if (TELA === 'home') telaHome(); else if (TELA === 'financeiro') telaFinanceiro(); else carregarPacientes(true);
     } catch (e) { toast(e.message); }
   };
 }
@@ -670,7 +696,8 @@ async function telaAgenda() {
 }
 
 async function abrirCompromisso(id, dia) {
-  const { pacientes } = await api('/pacientes?limite=500');
+  if (!CACHE.pacientes) CACHE.pacientes = (await api('/pacientes')).pacientes;
+  const pacientes = CACHE.pacientes;
   let c = { tipo: 'consulta', inicio: (dia || hojeISO()) + 'T09:00' };
   if (id) {
     const { compromissos } = await api('/compromissos?de=1900-01-01&ate=2999-12-31');
@@ -958,6 +985,7 @@ async function telaConfig() {
       barra.firstElementChild.style.width = '100%';
       res.innerHTML = `<b style="color:var(--ok)">Pronto.</b> ${linhas.length} linhas · ` +
         Object.entries(totais).map(([k, v]) => `${k}: ${v}`).join(' · ');
+      CACHE.pacientes = null;   // lista precisa ser relida depois de importar
       PLANOS = (await api('/planos')).planos;
     } catch (e) {
       res.innerHTML = `<b style="color:var(--erro)">Erro:</b> ${esc(e.message)}`;
