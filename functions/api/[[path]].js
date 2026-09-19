@@ -61,25 +61,66 @@ const num = (v) => {
 const MOEDA_POR_FORMA = { pix: 'BRL', asaas: 'BRL', infinity: 'BRL', zelle: 'USD', paypal: 'USD' };
 
 // ---------- cotação ----------
+const semTraco = (d) => String(d).slice(0, 10).replace(/-/g, '');
+
+// Busca a série diária real (bid de fechamento de cada dia) e grava no banco.
+// Um pedido cobre um intervalo inteiro, então a importação não faz uma chamada por data.
+async function sincronizarCotacoes(env, moeda, de, ate) {
+  if (!moeda || moeda === 'BRL') return 0;
+  let gravadas = 0;
+  let inicio = de;
+  // a API devolve no máximo ~360 registros por pedido
+  while (inicio <= ate) {
+    const fim = addDias(inicio, 330) > ate ? ate : addDias(inicio, 330);
+    const u = `https://economia.awesomeapi.com.br/json/daily/${moeda}-BRL/360`
+      + `?start_date=${semTraco(inicio)}&end_date=${semTraco(fim)}`;
+    try {
+      const r = await fetch(u);
+      if (r.ok) {
+        const lista = await r.json();
+        if (Array.isArray(lista)) {
+          const st = [];
+          for (const it of lista) {
+            const taxa = Number(it.bid || it.ask);
+            const ts = Number(it.timestamp);
+            if (!(taxa > 0) || !ts) continue;
+            const dia = new Date(ts * 1000).toISOString().slice(0, 10);
+            st.push(env.DB.prepare(
+              'INSERT OR REPLACE INTO cotacoes (dia,moeda,taxa,fonte) VALUES (?,?,?,?)')
+              .bind(dia, moeda, taxa, 'awesomeapi/daily'));
+          }
+          if (st.length) { await env.DB.batch(st); gravadas += st.length; }
+        }
+      }
+    } catch (e) { /* sem rede: segue com o que já tem */ }
+    inicio = addDias(fim, 1);
+  }
+  return gravadas;
+}
+
+// Taxa de uma data. Usa o dia exato; se não houver (fim de semana, feriado),
+// pega o pregão anterior mais próximo. Só busca na rede se o banco não souber.
 async function cotacaoDoDia(env, moeda, dia) {
   if (!moeda || moeda === 'BRL') return 1;
-  const d = dia || hoje();
-  const cache = await env.DB.prepare('SELECT taxa FROM cotacoes WHERE dia=? AND moeda=?')
+  const d = (dia || hoje()).slice(0, 10);
+
+  const exata = await env.DB.prepare('SELECT taxa FROM cotacoes WHERE dia=? AND moeda=?')
     .bind(d, moeda).first();
-  if (cache) return cache.taxa;
-  try {
-    const r = await fetch(`https://economia.awesomeapi.com.br/json/last/${moeda}-BRL`);
-    if (r.ok) {
-      const j = await r.json();
-      const k = `${moeda}BRL`;
-      const taxa = Number(j[k]?.bid || j[k]?.ask);
-      if (taxa > 0) {
-        await env.DB.prepare('INSERT OR REPLACE INTO cotacoes (dia,moeda,taxa,fonte) VALUES (?,?,?,?)')
-          .bind(d, moeda, taxa, 'awesomeapi').run();
-        return taxa;
-      }
-    }
-  } catch (e) { /* sem rede: cai no último conhecido */ }
+  if (exata) return exata.taxa;
+
+  const anterior = await env.DB.prepare(
+    'SELECT taxa FROM cotacoes WHERE moeda=? AND dia<=? AND dia>=? ORDER BY dia DESC LIMIT 1')
+    .bind(moeda, d, addDias(d, -7)).first();
+  if (anterior) return anterior.taxa;
+
+  // não tem no banco: puxa uma janela de 10 dias terminando na data pedida
+  await sincronizarCotacoes(env, moeda, addDias(d, -9), d);
+  const depois = await env.DB.prepare(
+    'SELECT taxa FROM cotacoes WHERE moeda=? AND dia<=? ORDER BY dia DESC LIMIT 1')
+    .bind(moeda, d).first();
+  if (depois) return depois.taxa;
+
+  // data futura ou série indisponível: usa a mais recente conhecida
   const ultima = await env.DB.prepare(
     'SELECT taxa FROM cotacoes WHERE moeda=? ORDER BY dia DESC LIMIT 1').bind(moeda).first();
   return ultima ? ultima.taxa : 0;
@@ -604,12 +645,13 @@ export async function onRequest(context) {
     // ==========================================================
     if (rota === '/importar/pacientes' && metodo === 'POST') {
       const linhas = Array.isArray(body.linhas) ? body.linhas : [];
-      let criados = 0, atualizados = 0, contratos = 0;
+      let criados = 0, renovacoes = 0, contratos = 0;
       for (const l of linhas) {
         if (!l.nome) continue;
-        let existente = null;
-        if (l.cod) existente = await env.DB.prepare('SELECT id FROM pacientes WHERE cod=?').bind(String(l.cod)).first();
-        if (!existente) existente = await env.DB.prepare('SELECT id FROM pacientes WHERE nome=?').bind(l.nome).first();
+        // Identidade é o NOME. O código da planilha se repete entre pessoas
+        // diferentes, então não serve como chave: nome igual = renovação.
+        const existente = await env.DB.prepare(
+          'SELECT id FROM pacientes WHERE lower(trim(nome))=lower(trim(?))').bind(l.nome).first();
 
         let pid;
         if (existente) {
@@ -619,7 +661,7 @@ export async function onRequest(context) {
                  apelido=COALESCE(?,apelido), obs=COALESCE(?,obs), updated_at=datetime('now') WHERE id=?`
           ).bind(l.cod ? String(l.cod) : null, l.pais || null, l.status || null,
             l.apelido || null, l.obs || null, pid).run();
-          atualizados++;
+          renovacoes++;
         } else {
           const r = await env.DB.prepare(
             `INSERT INTO pacientes (cod,nome,apelido,pais,status,obs,objetivo,telefone,email)
@@ -640,30 +682,48 @@ export async function onRequest(context) {
             l.status === 'encerrado' ? 'encerrado' : 'ativo', l.obs || null).run();
           const c = await env.DB.prepare('SELECT * FROM contratos WHERE id=?').bind(cr.meta.last_row_id).first();
           await gerarParcelas(env, c);
+
           if (num(l.valor_recebido) > 0) {
-            // marca as parcelas mais antigas como pagas até cobrir o recebido
-            let resta = num(l.valor_recebido);
+            // A coluna "Valor recebido" da planilha está SEMPRE em reais, inclusive
+            // nos contratos em dólar. Converte para a moeda do contrato pela taxa
+            // da data de início antes de dar baixa nas parcelas.
+            const taxa = await cotacaoDoDia(env, c.moeda, l.data_inicial);
+            const recebidoBrl = num(l.valor_recebido);
+            let resta = (c.moeda === 'BRL' || !taxa)
+              ? recebidoBrl
+              : Math.round((recebidoBrl / taxa) * 100) / 100;
+
             const ps = await env.DB.prepare(
               'SELECT * FROM parcelas WHERE contrato_id=? ORDER BY numero ASC').bind(c.id).all();
             for (const p of (ps.results || [])) {
-              if (resta <= 0) break;
+              if (resta <= 0.01) break;
               const aplica = Math.min(resta, Number(p.valor));
               const status = aplica + 0.009 >= Number(p.valor) ? 'paga' : 'parcial';
               await env.DB.prepare('UPDATE parcelas SET pago=?,status=? WHERE id=?')
-                .bind(aplica, status, p.id).run();
-              const taxa = await cotacaoDoDia(env, p.moeda, l.data_inicial);
+                .bind(Math.round(aplica * 100) / 100, status, p.id).run();
               await env.DB.prepare(
                 `INSERT INTO pagamentos (parcela_id,paciente_id,data,valor,moeda,cotacao,valor_brl,forma,obs)
                  VALUES (?,?,?,?,?,?,?,?,?)`
-              ).bind(p.id, pid, l.data_inicial, aplica, p.moeda, taxa || 1,
-                Math.round(aplica * (taxa || 1) * 100) / 100, l.forma || null, 'importado da planilha').run();
+              ).bind(p.id, pid, l.data_inicial, Math.round(aplica * 100) / 100, c.moeda, taxa || 1,
+                Math.round(aplica * (taxa || 1) * 100) / 100, l.forma || null,
+                'importado da planilha').run();
               resta -= aplica;
             }
           }
           contratos++;
         }
       }
-      return json({ ok: true, criados, atualizados, contratos });
+      return json({ ok: true, criados, renovacoes, contratos });
+    }
+
+    // sincroniza o histórico de câmbio de uma vez (deixa a importação rápida)
+    if (rota === '/cotacoes/sincronizar' && metodo === 'POST') {
+      const de = body.de || addDias(hoje(), -730);
+      const ate = body.ate || hoje();
+      const moedas = body.moedas || ['USD', 'GBP', 'EUR'];
+      const res = {};
+      for (const m of moedas) res[m] = await sincronizarCotacoes(env, m, de, ate);
+      return json({ ok: true, de, ate, gravadas: res });
     }
 
     if (rota === '/importar/anamneses' && metodo === 'POST') {

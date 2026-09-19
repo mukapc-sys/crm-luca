@@ -876,6 +876,14 @@ async function telaConfig() {
         <div style="margin-top:10px"><label>Avisar plano vencendo com (dias de antecedência)</label>
           <input id="sVenc" type="number" value="${esc(settings.vencimento_alerta_dias || 30)}"></div>
         <button class="btn ouro" style="margin-top:12px" id="salvarCfg">Salvar</button>
+
+        <hr style="border:0;border-top:1px solid var(--linha);margin:18px 0">
+        <h3>Câmbio</h3>
+        <p style="font-size:13px;color:var(--txt-2);margin:6px 0 10px">
+          Baixa a cotação de fechamento de cada dia dos últimos 2 anos (USD, GBP e EUR).
+          Cada pagamento passa a usar a taxa da data em que entrou.</p>
+        <button class="btn" id="btnCambio">Atualizar histórico de câmbio</button>
+        <div id="cambioRes" style="margin-top:10px;font-size:13px"></div>
       </div>
 
       <div class="card">
@@ -883,6 +891,11 @@ async function telaConfig() {
         <p style="font-size:13px;color:var(--txt-2);margin:6px 0 12px">
           Escolha o arquivo JSON da planilha atual ou das respostas do formulário.
           Arquivos grandes são enviados em blocos automaticamente.</p>
+        <div style="background:#FBF0D6;color:#8A6D12;padding:10px 12px;border-radius:9px;font-size:13px;margin-bottom:12px">
+          Antes de importar a planilha pela primeira vez, clique em
+          <b>Atualizar histórico de câmbio</b> abaixo. Sem isso a conversão dos
+          pagamentos antigos em dólar fica errada e a importação demora muito.
+        </div>
         <label>Tipo</label>
         <select id="impTipo" style="margin-bottom:10px">
           <option value="pacientes">Pacientes e contratos (planilha)</option>
@@ -905,6 +918,17 @@ async function telaConfig() {
     await api('/settings', { method: 'PUT', body: {
       followup_dias_alerta: $('#sFu').value, vencimento_alerta_dias: $('#sVenc').value } });
     toast('Configurações salvas');
+  };
+
+  $('#btnCambio').onclick = async () => {
+    const r = $('#cambioRes'), b = $('#btnCambio');
+    b.disabled = true; r.textContent = 'Baixando as séries… pode levar 1 minuto.';
+    try {
+      const j = await api('/cotacoes/sincronizar', { method: 'POST', body: {} });
+      r.innerHTML = `<b style="color:var(--ok)">Pronto.</b> ` +
+        Object.entries(j.gravadas).map(([m, q]) => `${m}: ${q} dias`).join(' · ');
+    } catch (e) { r.innerHTML = `<b style="color:var(--erro)">Erro:</b> ${esc(e.message)}`; }
+    finally { b.disabled = false; }
   };
 
   $('#btnImportar').onclick = async () => {
