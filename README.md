@@ -68,7 +68,8 @@ duas bases.
 | **Pacientes** | Busca por COD, nome ou apelido; filtros de situação, objetivo e país; ficha completa com abas de visão geral, consultas, financeiro e anamnese |
 | **Ficha de consulta** | O caderno do Luca em tela: COD, data, peso em kg **e** lbs (um calcula o outro), treino, as 5 refeições, ceia e observações; mostra a variação desde a última medição; imprime no mesmo formato |
 | **Agenda** | Calendário mensal; dois cliques num dia criam o compromisso; consultas, follow-ups, cobranças e compromissos pessoais |
-| **Financeiro** | Recebimentos por mês e por moeda, contratos por plano, parcelas em aberto com botão de WhatsApp e de baixa |
+| **Financeiro** | Filtro de período (hoje, esta semana, este mês, últimos 30 dias, personalizado). Recebido no período comparado ao anterior, entradas, a receber e vencido. Gráficos de entradas por dia ou mês, por forma de pagamento, por plano e por país, mais a tendência dos últimos 18 meses e a tabela dos mesmos números |
+| **Calculadora** | TMB e gasto energético total por Harris-Benedict, as mesmas constantes da planilha. Abre da ficha do paciente já preenchida com sexo, idade, altura e o peso da última consulta. Mostra faixas de déficit e superávit. Fatores de atividade editáveis em Configurações |
 | **Planos** | Cadastro com código, duração, preço BRL e USD, consultas incluídas, cadência de follow-up e regras |
 
 ## Regras que vieram da planilha
@@ -86,11 +87,20 @@ antigo continua valendo pela taxa da época. O campo é **editável**: se o
 Zelle ou a Wise converteram com outra taxa, corrija e o painel bate com o
 extrato.
 
+## Unidades
+
+Ele atende em oito países. Onde houver peso ou altura — cadastro do
+paciente, ficha de consulta, calculadora — os dois sistemas aparecem lado
+a lado e um preenche o outro: kg ↔ lb, cm ↔ pés/polegadas.
+
 ## Atualizar um banco que já existe
 
-Quem já rodou o `schema.sql` antigo roda `migrate-01.sql` no console do D1 —
-ele cria as tabelas do funil sem tocar nos dados. Instalação nova não precisa:
-o `schema.sql` já vem completo.
+No console do D1, na ordem:
+
+1. `migrate-01.sql` — tabelas do funil
+2. `migrate-02.sql` — sexo e altura do paciente, fatores de atividade
+
+Instalação nova não precisa de nenhum: o `schema.sql` já vem completo.
 
 ## Ainda não entra nesta fase
 

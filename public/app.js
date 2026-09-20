@@ -51,6 +51,9 @@ const CORES_COMPROMISSO = {
 const ROTULO_COMPROMISSO = { marcado: 'Marcado', feito: 'Realizado', cancelado: 'Cancelado' };
 
 const OBJETIVOS = ['Emagrecimento', 'Definição muscular', 'Ganho de massa muscular', 'Manutenção do peso'];
+// base real do Luca: 8 países. Lista cresce sozinha com o que estiver cadastrado.
+const PAISES_BASE = ['Brasil', 'US', 'Portugal', 'Inglaterra', 'Canadá', 'Colômbia', 'Luxemburgo', 'Tchéquia'];
+let PAISES = [...PAISES_BASE];
 const STATUS = ['ativo', 'devendo', 'encerrado', 'parceria', 'lead'];
 const FORMAS = ['pix', 'asaas', 'infinity', 'zelle', 'paypal', 'outro'];
 const MOEDAS = ['BRL', 'USD', 'GBP', 'EUR'];
@@ -209,6 +212,7 @@ async function telaHome() {
     <div class="topo">
       <div><h1>Início</h1><p>${new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric', timeZone: 'America/Sao_Paulo' })}</p></div>
       <div class="dir">
+        <button class="btn ghost" onclick="abrirCalculadora()">Calculadora</button>
         <button class="btn ghost" onclick="abrirCompromisso()">+ Compromisso</button>
         <button class="btn ghost" onclick="novoLead()">+ Lead</button>
         <button class="btn ouro" onclick="abrirPaciente()">+ Paciente</button>
@@ -618,6 +622,7 @@ async function telaPacientes() {
     <div class="topo">
       <div><h1>Pacientes</h1><p id="pacContagem">Carregando…</p></div>
       <div class="dir">
+        <button class="btn ghost" onclick="abrirCalculadora()">Calculadora</button>
         <button class="btn ghost" onclick="carregarPacientes(true)">Atualizar</button>
         <button class="btn ouro" onclick="abrirPaciente()">+ Paciente</button>
       </div>
@@ -634,8 +639,8 @@ async function telaPacientes() {
         ${OBJETIVOS.map((o) => `<option${FILTRO.objetivo === o ? ' selected' : ''}>${o}</option>`).join('')}
       </select></div>
       <div><label>País</label><select id="fPais">
-        <option value="">Todos</option><option${FILTRO.pais === 'Brasil' ? ' selected' : ''}>Brasil</option>
-        <option value="US"${FILTRO.pais === 'US' ? ' selected' : ''}>Estados Unidos</option>
+        <option value="">Todos</option>
+        ${PAISES.map((x) => `<option${FILTRO.pais === x ? ' selected' : ''}>${esc(x)}</option>`).join('')}
       </select></div>
       <button class="btn ghost" onclick="FILTRO={q:'',status:'',objetivo:'',pais:''};telaPacientes()">Limpar</button>
     </div>
@@ -654,6 +659,8 @@ async function carregarPacientes(forcar) {
   if (!CACHE.pacientes || forcar) {
     if ($('#tabelaPac')) $('#tabelaPac').innerHTML = '<p class="vazio">Carregando…</p>';
     CACHE.pacientes = (await api('/pacientes')).pacientes;
+    // a lista de países vem do que existe de verdade na base
+    PAISES = [...new Set([...PAISES_BASE, ...CACHE.pacientes.map((x) => x.pais).filter(Boolean)])].sort();
   }
   pintarPacientes();
 }
@@ -741,7 +748,10 @@ async function abrirPaciente(id) {
         <div class="grid g2" style="gap:8px">
           ${[['Código', p.cod], ['Apelido', p.apelido], ['País', p.pais], ['Telefone', p.telefone],
              ['E-mail', p.email], ['Instagram', p.instagram], ['Objetivo', p.objetivo],
-             ['Indicado por', p.indicacao], ['Nascimento', p.nascimento ? dataBR(p.nascimento) : ''],
+             ['Indicado por', p.indicacao],
+             ['Nascimento', p.nascimento ? `${dataBR(p.nascimento)} (${idadePor(p.nascimento) || '?'} anos)` : ''],
+             ['Sexo', p.sexo === 'M' ? 'Masculino' : p.sexo === 'F' ? 'Feminino' : ''],
+             ['Altura', p.altura_cm ? p.altura_cm + ' cm' : ''],
              ['Profissão', p.profissao]]
             .map(([k, v]) => `<div><label>${k}</label><div>${esc(v || '—')}</div></div>`).join('')}
         </div>
@@ -749,6 +759,7 @@ async function abrirPaciente(id) {
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn" onclick="abrirConsulta(${p.id})">+ Ficha de consulta</button>
+        <button class="btn ouro" onclick="abrirCalculadora(${p.id})">Calcular metabolismo</button>
         <button class="btn ghost" onclick="formPaciente(${p.id})">Editar cadastro</button>
         <button class="btn ghost" onclick="abrirContrato(${p.id})">+ Contrato</button>
         <button class="btn zap" onclick="zap('${esc(p.telefone || '')}')">WhatsApp</button>
@@ -820,10 +831,13 @@ async function formPaciente(id) {
         ${STATUS.map((s) => `<option value="${s}"${p.status === s ? ' selected' : ''}>${s[0].toUpperCase() + s.slice(1)}</option>`).join('')}</select></div>
       <div><label>Nome completo *</label><input id="pNome" value="${esc(p.nome || '')}"></div>
       <div><label>Apelido interno</label><input id="pApelido" placeholder="como o Luca lembra dele" value="${esc(p.apelido || '')}"></div>
-      <div><label>País</label><select id="pPais">
-        <option${p.pais === 'Brasil' ? ' selected' : ''}>Brasil</option>
-        <option value="US"${p.pais === 'US' ? ' selected' : ''}>Estados Unidos</option>
-        <option value="Outro"${p.pais === 'Outro' ? ' selected' : ''}>Outro</option></select></div>
+      <div><label>País</label><input id="pPais" list="listaPaises" value="${esc(p.pais || 'Brasil')}">
+        <datalist id="listaPaises">${PAISES.map((x) => `<option value="${esc(x)}">`).join('')}</datalist></div>
+      <div><label>Sexo</label><select id="pSexo">
+        <option value=""${!p.sexo ? ' selected' : ''}>—</option>
+        <option value="F"${p.sexo === 'F' ? ' selected' : ''}>Feminino</option>
+        <option value="M"${p.sexo === 'M' ? ' selected' : ''}>Masculino</option></select></div>
+      ${campoAltura('pAltura', 'pAltPes', 'pAltPol', p.altura_cm || null)}
       <div><label>WhatsApp (com DDI)</label><input id="pTel" placeholder="+55 51 99999-9999" value="${esc(p.telefone || '')}"></div>
       <div><label>E-mail</label><input id="pEmail" type="email" value="${esc(p.email || '')}"></div>
       <div><label>Instagram</label><input id="pInsta" value="${esc(p.instagram || '')}"></div>
@@ -847,6 +861,8 @@ async function formPaciente(id) {
     <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
     <button class="btn ouro" id="salvarPac">Salvar</button>`);
 
+  ligarAltura('pAltura', 'pAltPes', 'pAltPol');
+
   $('#salvarPac').onclick = async () => {
     const body = {
       cod: $('#pCod').value.trim(), nome: $('#pNome').value.trim(), apelido: $('#pApelido').value.trim(),
@@ -855,6 +871,7 @@ async function formPaciente(id) {
       objetivo: $$('.objChk').filter((c) => c.checked).map((c) => c.value).join(', '),
       indicacao: $('#pInd').value.trim(), cpf: $('#pCpf').value.trim(),
       endereco: $('#pEnd').value.trim(), obs: $('#pObs').value.trim(), status: $('#pStatus').value,
+      sexo: $('#pSexo').value || null, altura_cm: $('#pAltura').value || null,
     };
     if (!body.nome) return toast('Informe o nome.');
     try {
@@ -897,8 +914,7 @@ async function abrirConsulta(pacienteId, consultaId) {
         <div><label>Data</label><input id="cData" type="date" value="${esc(c.data || hojeISO())}"></div>
       </div>
       <div class="grid g2" style="margin:12px 0">
-        <div><label>Peso (kg)</label><input id="cKg" type="number" step="0.1" value="${c.peso_kg ?? ''}"></div>
-        <div><label>Peso (lbs)</label><input id="cLbs" type="number" step="0.1" value="${c.peso_lbs ?? ''}"></div>
+        ${campoPeso('cKg', 'cLbs', c.peso_kg ?? null)}
       </div>
       ${anterior ? `<p style="margin:-4px 0 12px;font-size:13px;color:var(--txt-2)">
         Última medição: <b>${anterior.peso_kg} kg</b> em ${dataBR(anterior.data)}
@@ -916,6 +932,7 @@ async function abrirConsulta(pacienteId, consultaId) {
 
   modal(consultaId ? 'Ficha de consulta' : 'Nova ficha de consulta', corpo, `
     ${consultaId ? `<button class="btn perigo" onclick="excluirConsulta(${consultaId},${pacienteId})">Excluir</button>` : ''}
+    <button class="btn ghost" onclick="abrirCalculadora(${pacienteId})">Metabolismo</button>
     <button class="btn ghost" onclick="window.print()">Imprimir</button>
     <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
     <button class="btn ouro" id="salvarCons">Salvar ficha</button>`);
@@ -930,8 +947,7 @@ async function abrirConsulta(pacienteId, consultaId) {
     $('#cDelta').innerHTML = ` · <b style="color:${dd < 0 ? 'var(--ok)' : dd > 0 ? 'var(--alerta)' : 'var(--txt-2)'}">
       ${dd > 0 ? '+' : ''}${dd.toFixed(1)} kg</b>`;
   };
-  kg.oninput = () => { if (kg.value) lbs.value = (Number(kg.value) * 2.20462).toFixed(1); delta(); };
-  lbs.oninput = () => { if (lbs.value) { kg.value = (Number(lbs.value) / 2.20462).toFixed(1); delta(); } };
+  ligarPeso('cKg', 'cLbs', delta);
   delta();
 
   $('#salvarCons').onclick = async () => {
@@ -1171,66 +1187,429 @@ async function excluirCompromisso(id) {
 }
 
 /* ==========================================================
-   FINANCEIRO
+   CALCULADORA — TMB, gasto energético e conversões
+   Harris-Benedict, as mesmas constantes da planilha do Luca:
+     mulher: 655 + 9,6×peso + 1,9×altura − 4,7×idade
+     homem:   66 + 13,7×peso + 5×altura   − 6,8×idade
    ========================================================== */
-async function telaFinanceiro() {
-  $('#tela').innerHTML = '<p class="vazio">Carregando…</p>';
-  const [f, cob] = await Promise.all([api('/financeiro'), api('/cobrancas?filtro=abertas')]);
+const KG_POR_LB = 0.45359237;
 
-  const meses = {};
-  f.por_mes.forEach((r) => { (meses[r.mes] ||= []).push(r); });
-  const listaMeses = Object.keys(meses).sort().reverse().slice(0, 12);
-  const totalBrl = (m) => meses[m].reduce((s, r) => s + Number(r.total_brl || 0), 0);
-  const maxMes = Math.max(1, ...listaMeses.map(totalBrl));
+function tmbHarrisBenedict(sexo, pesoKg, alturaCm, idade) {
+  if (!(pesoKg > 0) || !(alturaCm > 0) || !(idade > 0)) return null;
+  return sexo === 'M'
+    ? 66 + (13.7 * pesoKg) + (5 * alturaCm) - (6.8 * idade)
+    : 655 + (9.6 * pesoKg) + (1.9 * alturaCm) - (4.7 * idade);
+}
 
-  $('#tela').innerHTML = `
-    <div class="topo"><div><h1>Financeiro</h1><p>Valores em moeda original e convertidos pela cotação do dia do recebimento</p></div></div>
+function idadePor(nascimento, ref) {
+  if (!nascimento) return null;
+  const n = new Date(nascimento + 'T12:00:00Z');
+  const r = new Date((ref || hojeISO()) + 'T12:00:00Z');
+  if (isNaN(n)) return null;
+  let a = r.getUTCFullYear() - n.getUTCFullYear();
+  const m = r.getUTCMonth() - n.getUTCMonth();
+  if (m < 0 || (m === 0 && r.getUTCDate() < n.getUTCDate())) a--;
+  return a > 0 ? a : null;
+}
 
-    <div class="grid g4" style="margin-bottom:16px">
-      ${f.a_receber.map((r) => `<div class="kpi"><span>A receber ${r.moeda}</span>
-        <b style="font-size:20px">${money(r.total, r.moeda)}</b>
-        <small style="color:var(--txt-2)">${r.qtd} parcelas</small></div>`).join('') || '<div class="kpi"><span>A receber</span><b>—</b></div>'}
-    </div>
+function fatores(sexo) {
+  const cru = (CACHE.settings || {})[sexo === 'M' ? 'fatores_m' : 'fatores_f']
+    || (sexo === 'M' ? 'Sedentário:1.40|Leve:1.56|Moderado:1.78|Intenso:2.10'
+                     : 'Sedentário:1.40|Leve:1.55|Moderado:1.70|Intenso:2.00');
+  return cru.split('|').map((p) => {
+    const [nome, v] = p.split(':');
+    return { nome: (nome || '').trim(), fator: Number(v) || 1 };
+  }).filter((f) => f.nome);
+}
+
+/* ---------- conversores reaproveitados em todas as telas ----------
+   Ele atende em países com unidades diferentes: onde houver peso ou
+   altura, os dois sistemas aparecem lado a lado e um preenche o outro. */
+function campoPeso(idKg, idLb, valorKg, rot = 'Peso') {
+  const lb = valorKg ? (Number(valorKg) / KG_POR_LB).toFixed(2) : '';
+  return `<div><label>${rot} (kg)</label><input id="${idKg}" type="number" step="0.01" value="${valorKg ?? ''}"></div>
+          <div><label>${rot} (lb)</label><input id="${idLb}" type="number" step="0.01" value="${lb}"></div>`;
+}
+function campoAltura(idCm, idPes, idPol, valorCm, rot = 'Altura') {
+  let pes = '', pol = '';
+  if (valorCm) { const t = Number(valorCm) / 2.54; pes = Math.floor(t / 12); pol = (t - pes * 12).toFixed(1); }
+  return `<div><label>${rot} (cm)</label><input id="${idCm}" type="number" step="0.1" value="${valorCm ?? ''}"></div>
+          <div><label>${rot} (pés / polegadas)</label>
+            <div style="display:flex;gap:6px">
+              <input id="${idPes}" type="number" step="1" placeholder="pés" value="${pes}">
+              <input id="${idPol}" type="number" step="0.1" placeholder="pol" value="${pol}">
+            </div></div>`;
+}
+function ligarPeso(idKg, idLb, aoMudar) {
+  const kg = $('#' + idKg), lb = $('#' + idLb);
+  if (!kg || !lb) return;
+  kg.oninput = () => { const v = Number(kg.value); lb.value = v ? (v / KG_POR_LB).toFixed(2) : ''; aoMudar && aoMudar(); };
+  lb.oninput = () => { const v = Number(lb.value); kg.value = v ? (v * KG_POR_LB).toFixed(2) : ''; aoMudar && aoMudar(); };
+}
+function ligarAltura(idCm, idPes, idPol, aoMudar) {
+  const cm = $('#' + idCm), pes = $('#' + idPes), pol = $('#' + idPol);
+  if (!cm || !pes || !pol) return;
+  cm.oninput = () => {
+    const v = Number(cm.value);
+    if (v) { const t = v / 2.54; pes.value = Math.floor(t / 12); pol.value = (t - Math.floor(t / 12) * 12).toFixed(1); }
+    else { pes.value = ''; pol.value = ''; }
+    aoMudar && aoMudar();
+  };
+  const daImperial = () => {
+    const p = Number(pes.value) || 0, i = Number(pol.value) || 0;
+    cm.value = (p || i) ? ((p * 12 + i) * 2.54).toFixed(1) : '';
+    aoMudar && aoMudar();
+  };
+  pes.oninput = daImperial; pol.oninput = daImperial;
+}
+
+const kcal = (v) => Math.round(v * 100) / 100;
+const fmtKcal = (v) => v == null ? '—'
+  : v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' kcal';
+
+async function abrirCalculadora(pacienteId) {
+  if (!CACHE.settings) CACHE.settings = (await api('/settings')).settings;
+
+  let p = null, ultima = null;
+  if (pacienteId) {
+    const d = await api('/pacientes/' + pacienteId);
+    p = d.paciente;
+    ultima = (d.consultas || []).find((c) => c.peso_kg);
+  }
+  const sexo0 = (p && p.sexo) || 'F';
+  const idade0 = p ? idadePor(p.nascimento) : null;
+  const peso0 = ultima ? ultima.peso_kg : null;
+  const alt0 = p && p.altura_cm ? p.altura_cm : null;
+
+  const corpo = `
+    ${p ? `<div class="card" style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <div style="flex:1;min-width:0"><b>${esc(p.nome)}</b>${p.apelido ? ` <span class="apelido">“${esc(p.apelido)}”</span>` : ''}
+        <div style="font-size:12.5px;color:var(--txt-2)">
+          ${idade0 ? idade0 + ' anos' : '<b style="color:var(--erro)">sem data de nascimento</b>'} ·
+          ${alt0 ? alt0 + ' cm' : '<b style="color:var(--erro)">sem altura</b>'} ·
+          ${peso0 ? peso0 + ' kg (ficha de ' + dataBR(ultima.data) + ')' : '<b style="color:var(--erro)">sem peso registrado</b>'}
+        </div></div>
+      <button class="btn ghost mini" onclick="fecharModal();formPaciente(${p.id})">Completar cadastro</button>
+    </div>` : ''}
 
     <div class="grid g2">
-      <div class="card">
-        <h3>Recebimentos por mês</h3>
-        <div style="margin-top:12px">
-          ${listaMeses.map((m) => `<div style="margin-bottom:11px">
-            <div style="display:flex;justify-content:space-between;font-size:13px">
-              <b>${m.split('-').reverse().join('/')}</b>
-              <span>${money(totalBrl(m), 'BRL')}</span></div>
-            <div class="barra-peso"><i style="width:${(totalBrl(m) / maxMes) * 100}%"></i></div>
-            <small style="color:var(--txt-2)">${meses[m].map((r) => `${money(r.total, r.moeda)}`).join(' · ')}</small>
-          </div>`).join('') || '<p class="vazio">Nenhum pagamento registrado.</p>'}
-        </div>
-      </div>
+      <div><label>Sexo</label><select id="cSexo">
+        <option value="F"${sexo0 === 'F' ? ' selected' : ''}>Feminino</option>
+        <option value="M"${sexo0 === 'M' ? ' selected' : ''}>Masculino</option></select></div>
+      <div><label>Idade (anos)</label><input id="cIdade" type="number" min="1" max="120" value="${idade0 || ''}"></div>
+      ${campoPeso('cKg', 'cLb', peso0)}
+      ${campoAltura('cCm', 'cPes', 'cPol', alt0)}
+      <div style="grid-column:1/-1"><label>Nível de atividade</label>
+        <select id="cNivel"></select></div>
+    </div>
 
-      <div class="card">
-        <h3>Contratos por plano</h3>
-        <table style="margin-top:8px"><thead><tr><th>Plano</th><th>Qtd</th><th>Total</th></tr></thead><tbody>
-          ${f.por_plano.slice(0, 15).map((r) => `<tr>
-            <td><span class="cod">${esc(r.codigo_plano || '—')}</span></td>
-            <td>${r.qtd}</td><td>${money(r.total, r.moeda)}</td></tr>`).join('') || '<tr><td colspan="3" class="vazio">—</td></tr>'}
-        </tbody></table>
+    <div class="grid g2" style="margin-top:14px">
+      <div class="kpi"><span>Taxa de metabolismo basal</span>
+        <b id="cTmb" style="font-size:25px">—</b>
+        <small style="color:var(--txt-2)">energia em repouso absoluto</small></div>
+      <div class="kpi" style="border-color:var(--ouro);border-width:2px">
+        <span>Gasto energético total</span>
+        <b id="cGet" style="font-size:25px">—</b>
+        <small id="cGetSub" style="color:var(--txt-2)">TMB × fator de atividade</small></div>
+    </div>
+
+    <div id="cAjuste" class="card hide" style="margin-top:12px">
+      <label>Ajuste para o objetivo</label>
+      <div class="viz-barras" style="margin-top:6px"></div>
+    </div>
+
+    <p style="font-size:12px;color:var(--txt-2);margin:14px 0 0;line-height:1.6">
+      Harris-Benedict, as mesmas constantes da planilha.
+      Mulher: 655 + 9,6×peso + 1,9×altura − 4,7×idade ·
+      Homem: 66 + 13,7×peso + 5×altura − 6,8×idade.
+      Os fatores de atividade ficam em Configurações.
+    </p>`;
+
+  modal('Calculadora de metabolismo', corpo, `
+    ${p ? `<button class="btn ghost" id="cSalvar">Salvar no cadastro</button>` : ''}
+    <button class="btn ghost" onclick="fecharModal()">Fechar</button>`);
+
+  const el = (id) => $('#' + id);
+
+  function montaNiveis() {
+    const fs = fatores(el('cSexo').value);
+    const atual = el('cNivel').value;
+    el('cNivel').innerHTML = fs.map((f) =>
+      `<option value="${f.fator}"${String(f.fator) === atual ? ' selected' : ''}>${esc(f.nome)} (${f.fator})</option>`).join('');
+    if (!atual) el('cNivel').selectedIndex = Math.min(1, fs.length - 1);
+  }
+
+  function calcular() {
+    const sexo = el('cSexo').value;
+    const tmb = tmbHarrisBenedict(sexo, Number(el('cKg').value), Number(el('cCm').value), Number(el('cIdade').value));
+    const fator = Number(el('cNivel').value) || 0;
+    el('cTmb').textContent = tmb == null ? '—' : fmtKcal(kcal(tmb));
+    const get = tmb != null && fator ? kcal(tmb * fator) : null;
+    el('cGet').textContent = get == null ? '—' : fmtKcal(get);
+    el('cGetSub').textContent = get == null ? 'TMB × fator de atividade'
+      : `${fmtKcal(kcal(tmb))} × ${fator}`;
+
+    const box = $('#cAjuste');
+    if (get == null) { box.classList.add('hide'); return; }
+    box.classList.remove('hide');
+    const linhas = [
+      ['Déficit 20% (emagrecimento)', get * 0.8],
+      ['Déficit 10%', get * 0.9],
+      ['Manutenção', get],
+      ['Superávit 10%', get * 1.1],
+      ['Superávit 20% (ganho)', get * 1.2],
+    ];
+    box.querySelector('.viz-barras').innerHTML = linhas.map(([rot, v], i) => `
+      <div class="viz-linha">
+        <span class="viz-rot">${rot}</span>
+        <span class="viz-trilho"><i style="width:${(v / (get * 1.2)) * 100}%;
+          background:${i === 2 ? '#C9A227' : '#1E4062'}"></i></span>
+        <b class="viz-val">${fmtKcal(kcal(v))}</b>
+      </div>`).join('');
+  }
+
+  ligarPeso('cKg', 'cLb', calcular);
+  ligarAltura('cCm', 'cPes', 'cPol', calcular);
+  el('cIdade').oninput = calcular;
+  el('cNivel').onchange = calcular;
+  el('cSexo').onchange = () => { montaNiveis(); calcular(); };
+
+  montaNiveis();
+  calcular();
+
+  if (p) $('#cSalvar').onclick = async () => {
+    try {
+      await api('/pacientes/' + p.id, { method: 'PUT', body: {
+        ...p, sexo: el('cSexo').value, altura_cm: el('cCm').value || null } });
+      toast('Sexo e altura salvos na ficha');
+      CACHE.pacientes = null;
+    } catch (e) { toast(e.message); }
+  };
+}
+
+/* ==========================================================
+   FINANCEIRO
+   ========================================================== */
+let PERIODO = { chave: '30d', de: null, ate: null };
+
+function faixaPeriodo(chave) {
+  const h = hojeISO();
+  const d = new Date(h + 'T12:00:00Z');
+  const iso = (x) => x.toISOString().slice(0, 10);
+  const menos = (n) => { const y = new Date(h + 'T12:00:00Z'); y.setUTCDate(y.getUTCDate() - n); return iso(y); };
+  if (chave === 'hoje') return { de: h, ate: h, rotulo: 'Hoje' };
+  if (chave === 'semana') {
+    const dia = d.getUTCDay();               // 0=domingo
+    const ini = new Date(d); ini.setUTCDate(d.getUTCDate() - dia);
+    return { de: iso(ini), ate: h, rotulo: 'Esta semana' };
+  }
+  if (chave === 'mes') return { de: h.slice(0, 8) + '01', ate: h, rotulo: 'Este mês' };
+  if (chave === '30d') return { de: menos(29), ate: h, rotulo: 'Últimos 30 dias' };
+  return { de: PERIODO.de || menos(29), ate: PERIODO.ate || h, rotulo: 'Personalizado' };
+}
+
+/* ---------- gráficos em SVG, sem biblioteca ---------- */
+const VIZ = { serie: '#1E4062', destaque: '#C9A227', grade: '#E2E7EE', eixo: '#5A6B7D' };
+
+// colunas ao longo do tempo. Uma série só: sem legenda, rótulo direto no maior.
+function colunas(dados, { altura = 190, formato = (v) => money(v, 'BRL') } = {}) {
+  if (!dados.length || dados.every((d) => !d.valor))
+    return '<p class="vazio">Nenhuma entrada neste período.</p>';
+  const L = 52, R = 10, T = 22, B = 30;
+  const larg = 640, alt = altura;
+  const iw = larg - L - R, ih = alt - T - B;
+  const max = Math.max(...dados.map((d) => d.valor));
+  const passo = Math.pow(10, Math.floor(Math.log10(max || 1)));
+  const topo = Math.ceil(max / passo) * passo || 1;
+  const banda = iw / dados.length;
+  const gl = 24 > banda ? banda * 0.72 : Math.min(24, banda * 0.72);  // marca fina, nunca preenche a banda
+  const iMax = dados.findIndex((d) => d.valor === max);
+  const ticks = [0, topo / 2, topo];
+
+  return `<svg viewBox="0 0 ${larg} ${alt}" class="viz" role="img"
+      aria-label="Entradas por período" preserveAspectRatio="xMidYMid meet">
+    ${ticks.map((t) => {
+      const y = T + ih - (t / topo) * ih;
+      return `<line x1="${L}" y1="${y}" x2="${larg - R}" y2="${y}" stroke="${VIZ.grade}" stroke-width="1"/>
+        <text x="${L - 7}" y="${y + 4}" text-anchor="end" font-size="10.5" fill="${VIZ.eixo}">${
+          t >= 1000 ? (t / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + 'k' : Math.round(t)}</text>`;
+    }).join('')}
+    ${dados.map((d, i) => {
+      const hgt = topo ? (d.valor / topo) * ih : 0;
+      const x = L + i * banda + (banda - gl) / 2;
+      const y = T + ih - hgt;
+      const cor = i === iMax ? VIZ.destaque : VIZ.serie;
+      return `<g class="viz-col"><title>${esc(d.rotuloLongo || d.rotulo)}: ${formato(d.valor)}</title>
+        <rect x="${L + i * banda}" y="${T}" width="${banda}" height="${ih}" fill="transparent"/>
+        <rect x="${x}" y="${y}" width="${gl}" height="${Math.max(hgt, d.valor ? 2 : 0)}"
+              rx="4" fill="${cor}"/>
+        ${hgt > 0 ? `<rect x="${x}" y="${T + ih - Math.min(hgt, 4)}" width="${gl}" height="${Math.min(hgt, 4)}" fill="${cor}"/>` : ''}
+      </g>`;
+    }).join('')}
+    ${max ? (() => {
+      const hgt = (max / topo) * ih;
+      const x = L + iMax * banda + banda / 2;
+      return `<text x="${x}" y="${T + ih - hgt - 7}" text-anchor="middle" font-size="11"
+        font-weight="700" fill="var(--txt)">${formato(max)}</text>`;
+    })() : ''}
+    <line x1="${L}" y1="${T + ih}" x2="${larg - R}" y2="${T + ih}" stroke="${VIZ.grade}" stroke-width="1"/>
+    ${(() => {
+      const pular = dados.length > 16 ? Math.ceil(dados.length / 8) : 1;
+      const ult = dados.length - 1;
+      return dados.map((d, i) => {
+        // mostra o último só se não encostar no anterior já rotulado
+        const rotulado = i % pular === 0;
+        const ultimoCabe = i === ult && (ult % pular !== 0) && (ult - Math.floor(ult / pular) * pular) >= pular / 2;
+        if (!rotulado && !ultimoCabe) return '';
+        return `<text x="${L + i * banda + banda / 2}" y="${alt - 10}" text-anchor="middle"
+          font-size="10.5" fill="${VIZ.eixo}">${esc(d.rotulo)}</text>`;
+      }).join('');
+    })()}
+  </svg>`;
+}
+
+// barras horizontais: magnitude com nomes longos
+function barras(dados, { formato = (v) => money(v, 'BRL'), max: maxIn } = {}) {
+  if (!dados.length) return '<p class="vazio">Sem dados no período.</p>';
+  const max = maxIn || Math.max(...dados.map((d) => d.valor), 1);
+  return `<div class="viz-barras">${dados.map((d, i) => `
+    <div class="viz-linha" title="${esc(d.rotulo)}: ${formato(d.valor)}">
+      <span class="viz-rot">${esc(d.rotulo)}</span>
+      <span class="viz-trilho"><i style="width:${Math.max((d.valor / max) * 100, d.valor ? 1.5 : 0)}%;
+        background:${i === 0 ? VIZ.destaque : VIZ.serie}"></i></span>
+      <b class="viz-val">${formato(d.valor)}</b>
+    </div>`).join('')}</div>`;
+}
+
+async function telaFinanceiro() {
+  const f = faixaPeriodo(PERIODO.chave);
+  $('#tela').innerHTML = '<p class="vazio">Carregando…</p>';
+  const d = await api(`/financeiro?de=${f.de}&ate=${f.ate}`);
+
+  const total = Number(d.total.total || 0);
+  const ant = Number(d.anterior.total || 0);
+  const varia = ant ? Math.round(((total - ant) / ant) * 100) : null;
+  const receber = d.a_receber.reduce((s, r) => s + Number(r.total || 0) * (r.moeda === 'BRL' ? 1 : 0), 0);
+  const ticket = d.total.qtd ? total / d.total.qtd : 0;
+
+  // série: rótulo curto no eixo, completo no tooltip
+  const serie = d.serie.map((s) => ({
+    rotulo: d.granularidade === 'dia' ? s.rotulo.slice(8, 10) : s.rotulo.slice(5, 7) + '/' + s.rotulo.slice(2, 4),
+    rotuloLongo: d.granularidade === 'dia' ? dataBR(s.rotulo) : s.rotulo.split('-').reverse().join('/'),
+    valor: Number(s.total_brl || 0),
+  }));
+
+  // tendência longa, sempre mensal
+  const tend = d.por_mes.map((m) => ({
+    rotulo: m.mes.slice(5, 7) + '/' + m.mes.slice(2, 4),
+    rotuloLongo: m.mes.split('-').reverse().join('/'),
+    valor: Number(m.total_brl || 0),
+  }));
+
+  const chips = [['hoje', 'Hoje'], ['semana', 'Esta semana'], ['mes', 'Este mês'],
+    ['30d', 'Últimos 30 dias'], ['custom', 'Personalizado']];
+
+  $('#tela').innerHTML = `
+    <div class="topo">
+      <div><h1>Financeiro</h1>
+        <p>${f.rotulo} · ${dataBR(f.de)} a ${dataBR(f.ate)} · valores convertidos pela cotação do dia de cada entrada</p></div>
+    </div>
+
+    <div class="filtros" style="align-items:center">
+      ${chips.map(([k, r]) => `<button class="btn ${PERIODO.chave === k ? '' : 'ghost'} mini"
+        onclick="trocarPeriodo('${k}')">${r}</button>`).join('')}
+      <span id="wrapCustom" class="${PERIODO.chave === 'custom' ? '' : 'hide'}"
+            style="display:flex;gap:8px;align-items:flex-end;margin-left:6px">
+        <span><label>De</label><input id="pDe" type="date" value="${f.de}"></span>
+        <span><label>Até</label><input id="pAte" type="date" value="${f.ate}"></span>
+        <button class="btn mini" onclick="aplicarCustom()">Aplicar</button>
+      </span>
+    </div>
+
+    <div class="grid g4" style="margin-bottom:16px">
+      <div class="kpi"><span>Recebido no período</span>
+        <b style="font-size:27px">${money(total, 'BRL')}</b>
+        <small style="color:${varia == null ? 'var(--txt-2)' : varia >= 0 ? 'var(--ok)' : 'var(--erro)'}">
+          ${varia == null ? 'sem base para comparar' : `${varia >= 0 ? '+' : ''}${varia}% vs período anterior`}</small></div>
+      <div class="kpi"><span>Entradas</span><b>${d.total.qtd || 0}</b>
+        <small style="color:var(--txt-2)">${d.total.pessoas || 0} pessoas · média ${money(ticket, 'BRL')}</small></div>
+      <div class="kpi"><span>A receber</span>
+        <b style="font-size:17px;line-height:1.4">${d.a_receber.map((r) => money(r.total, r.moeda)).join('<br>') || '—'}</b>
+        <small style="color:var(--txt-2)">${d.a_receber.reduce((s, r) => s + r.qtd, 0)} parcelas em aberto</small></div>
+      <div class="kpi"><span>Vencido</span>
+        <b style="color:${d.atrasado.qtd ? 'var(--erro)' : 'var(--txt)'}">${d.atrasado.qtd || 0}</b>
+        <small style="color:var(--txt-2)">parcelas passaram da data</small></div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <h3>Entradas ${d.granularidade === 'dia' ? 'por dia' : 'por mês'}</h3>
+      <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 10px">
+        Em reais, somando todas as moedas. Passe o mouse para ver cada barra.</p>
+      ${colunas(serie)}
+    </div>
+
+    <div class="grid g2" style="margin-bottom:14px">
+      <div class="card"><h3>Por moeda</h3>
+        <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 10px">No período escolhido.</p>
+        ${!d.por_moeda.length ? '<p class="vazio">Sem entradas.</p>' :
+          d.por_moeda.map((m) => `<div class="linha-aviso">
+            <span class="tag">${m.moeda}</span>
+            <div class="txt"><b>${money(m.total, m.moeda)}</b>
+              <small>${m.qtd} entrada${m.qtd === 1 ? '' : 's'}${m.moeda !== 'BRL' ? ' · ' + money(m.total_brl, 'BRL') + ' convertidos' : ''}</small></div>
+          </div>`).join('')}
+      </div>
+      <div class="card"><h3>Por forma de pagamento</h3>
+        <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 10px">Em reais convertidos.</p>
+        ${barras(d.por_forma.map((x) => ({ rotulo: x.forma, valor: Number(x.total_brl || 0) })))}
       </div>
     </div>
 
-    <div class="card" style="margin-top:14px;padding:0;overflow:auto">
-      <h3 style="padding:16px 16px 6px">Parcelas em aberto (${cob.cobrancas.length})</h3>
-      ${!cob.cobrancas.length ? '<p class="vazio">Nada em aberto.</p>' :
-        `<table><thead><tr><th>Paciente</th><th>Parcela</th><th>Valor</th><th>Vence</th><th>Situação</th><th></th></tr></thead><tbody>
-        ${cob.cobrancas.map((c) => `<tr>
-          <td>${nomeCompleto(c)}</td>
-          <td>${c.numero}/${c.total}</td>
-          <td>${money(c.valor - c.pago, c.moeda)}</td>
-          <td>${dataBR(c.vencimento)}</td>
-          <td><span class="tag ${c.dias < 0 ? 'devendo' : c.dias === 0 ? 'hoje' : ''}">${c.dias < 0 ? Math.abs(c.dias) + 'd atraso' : c.dias === 0 ? 'hoje' : 'em ' + c.dias + 'd'}</span></td>
-          <td style="white-space:nowrap">
-            <button class="btn zap mini" onclick="zap('${esc(c.telefone || '')}')">Zap</button>
-            <button class="btn mini" onclick="abrirPagamento(${c.paciente_id},${c.id},${c.valor - c.pago},'${c.moeda}')">Receber</button>
-          </td></tr>`).join('')}</tbody></table>`}
+    <div class="grid g2" style="margin-bottom:14px">
+      <div class="card"><h3>Por plano</h3>
+        <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 10px">O que cada plano trouxe no período.</p>
+        ${barras(d.por_plano.map((x) => ({ rotulo: x.plano, valor: Number(x.total_brl || 0) })))}
+      </div>
+      <div class="card"><h3>Por país</h3>
+        <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 10px">Onde está o faturamento.</p>
+        ${barras(d.por_pais.map((x) => ({ rotulo: x.pais, valor: Number(x.total_brl || 0) })))}
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <h3>Tendência dos últimos ${tend.length} meses</h3>
+      <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 10px">
+        Independe do filtro acima — serve para ver o movimento do negócio.</p>
+      ${colunas(tend, { altura: 200 })}
+    </div>
+
+    <div class="card" style="padding:0;overflow:auto">
+      <h3 style="padding:16px 16px 4px">Tabela do período</h3>
+      <p style="font-size:12.5px;color:var(--txt-2);margin:0;padding:0 16px 10px">
+        Os mesmos números dos gráficos, para conferir.</p>
+      ${!serie.length ? '<p class="vazio">Sem entradas no período.</p>' :
+        `<table><thead><tr><th>${d.granularidade === 'dia' ? 'Dia' : 'Mês'}</th>
+          <th>Entradas</th><th>Total em reais</th></tr></thead><tbody>
+        ${d.serie.map((s) => `<tr><td>${d.granularidade === 'dia' ? dataBR(s.rotulo) : s.rotulo.split('-').reverse().join('/')}</td>
+          <td>${s.qtd}</td><td><b>${money(s.total_brl, 'BRL')}</b></td></tr>`).join('')}
+        </tbody><tfoot><tr style="border-top:2px solid var(--linha)">
+          <td><b>Total</b></td><td><b>${d.total.qtd}</b></td><td><b>${money(total, 'BRL')}</b></td>
+        </tr></tfoot></table>`}
     </div>`;
+}
+
+function trocarPeriodo(k) {
+  PERIODO.chave = k;
+  if (k === 'custom') {
+    const f = faixaPeriodo('30d');
+    PERIODO.de = PERIODO.de || f.de; PERIODO.ate = PERIODO.ate || f.ate;
+  }
+  telaFinanceiro();
+}
+function aplicarCustom() {
+  PERIODO.de = $('#pDe').value; PERIODO.ate = $('#pAte').value;
+  if (!PERIODO.de || !PERIODO.ate) return toast('Escolha as duas datas.');
+  if (PERIODO.de > PERIODO.ate) return toast('A data inicial tem que vir antes da final.');
+  telaFinanceiro();
 }
 
 /* ==========================================================
@@ -1337,6 +1716,19 @@ async function telaConfig() {
           Cada pagamento passa a usar a taxa da data em que entrou.</p>
         <button class="btn" id="btnCambio">Atualizar histórico de câmbio</button>
         <div id="cambioRes" style="margin-top:10px;font-size:13px"></div>
+
+        <hr style="border:0;border-top:1px solid var(--linha);margin:18px 0">
+        <h3>Fatores de atividade</h3>
+        <p style="font-size:13px;color:var(--txt-2);margin:6px 0 10px">
+          Multiplicam a TMB para chegar ao gasto energético total.
+          Um por linha, no formato <code>Nome:fator</code>.</p>
+        <div style="margin-bottom:10px"><label>Feminino</label>
+          <textarea id="sFatF" style="min-height:92px;font-family:ui-monospace,monospace;font-size:12.5px">${
+            esc((settings.fatores_f || 'Sedentário:1.40|Leve:1.55|Moderado:1.70|Intenso:2.00').split('|').join('\n'))}</textarea></div>
+        <div><label>Masculino</label>
+          <textarea id="sFatM" style="min-height:92px;font-family:ui-monospace,monospace;font-size:12.5px">${
+            esc((settings.fatores_m || 'Sedentário:1.40|Leve:1.56|Moderado:1.78|Intenso:2.10').split('|').join('\n'))}</textarea></div>
+        <button class="btn ouro" style="margin-top:12px" id="salvarFat">Salvar fatores</button>
       </div>
 
       <div class="card">
@@ -1371,6 +1763,15 @@ async function telaConfig() {
     await api('/settings', { method: 'PUT', body: {
       followup_dias_alerta: $('#sFu').value, vencimento_alerta_dias: $('#sVenc').value } });
     toast('Configurações salvas');
+  };
+
+  $('#salvarFat').onclick = async () => {
+    const junta = (id) => $('#' + id).value.split('\n').map((l) => l.trim()).filter(Boolean).join('|');
+    const f = junta('sFatF'), m = junta('sFatM');
+    const valido = (s) => s.split('|').every((p) => /^[^:]+:\s*\d+([.,]\d+)?$/.test(p));
+    if (!valido(f) || !valido(m)) return toast('Use o formato Nome:fator, um por linha.');
+    await api('/settings', { method: 'PUT', body: { fatores_f: f.replace(/,/g, '.'), fatores_m: m.replace(/,/g, '.') } });
+    CACHE.settings = null; toast('Fatores salvos');
   };
 
   $('#btnCambio').onclick = async () => {

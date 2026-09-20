@@ -599,7 +599,7 @@ export async function onRequest(context) {
       // centenas de pacientes a diferença é de segundos para milissegundos.
       let sql = `
         SELECT pa.id, pa.cod, pa.nome, pa.apelido, pa.pais, pa.telefone, pa.email,
-               pa.objetivo, pa.status,
+               pa.objetivo, pa.status, pa.sexo, pa.altura_cm, pa.nascimento,
                c.codigo_plano  AS plano_atual,
                c.data_final    AS data_final,
                uc.ultima_consulta,
@@ -636,12 +636,13 @@ export async function onRequest(context) {
       if (!b.nome) return bad('Nome é obrigatório.');
       const res = await env.DB.prepare(
         `INSERT INTO pacientes (cod,nome,apelido,pais,email,telefone,instagram,nascimento,cpf,
-             profissao,endereco,objetivo,status,parceiro_id,indicacao,obs)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+             profissao,endereco,objetivo,status,parceiro_id,indicacao,obs,sexo,altura_cm)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ).bind(b.cod || null, b.nome.trim(), b.apelido || null, b.pais || 'Brasil', b.email || null,
         b.telefone || null, b.instagram || null, b.nascimento || null, b.cpf || null,
         b.profissao || null, b.endereco || null, b.objetivo || null, b.status || 'ativo',
-        b.parceiro_id || null, b.indicacao || null, b.obs || null).run();
+        b.parceiro_id || null, b.indicacao || null, b.obs || null,
+        b.sexo || null, b.altura_cm ? num(b.altura_cm) : null).run();
       return json({ ok: true, id: res.meta.last_row_id });
     }
 
@@ -674,11 +675,12 @@ export async function onRequest(context) {
       await env.DB.prepare(
         `UPDATE pacientes SET cod=?,nome=?,apelido=?,pais=?,email=?,telefone=?,instagram=?,
             nascimento=?,cpf=?,profissao=?,endereco=?,objetivo=?,status=?,parceiro_id=?,indicacao=?,obs=?,
-            updated_at=datetime('now') WHERE id=?`
+            sexo=?,altura_cm=?,updated_at=datetime('now') WHERE id=?`
       ).bind(b.cod || null, b.nome, b.apelido || null, b.pais || 'Brasil', b.email || null,
         b.telefone || null, b.instagram || null, b.nascimento || null, b.cpf || null,
         b.profissao || null, b.endereco || null, b.objetivo || null, b.status || 'ativo',
-        b.parceiro_id || null, b.indicacao || null, b.obs || null, id).run();
+        b.parceiro_id || null, b.indicacao || null, b.obs || null,
+        b.sexo || null, b.altura_cm ? num(b.altura_cm) : null, id).run();
       return json({ ok: true });
     }
 
@@ -899,9 +901,67 @@ export async function onRequest(context) {
     // FINANCEIRO (painel)
     // ==========================================================
     if (rota === '/financeiro' && metodo === 'GET') {
-      const porMes = await env.DB.prepare(
-        `SELECT substr(data,1,7) mes, moeda, SUM(valor) total, SUM(valor_brl) total_brl
-           FROM pagamentos GROUP BY mes, moeda ORDER BY mes DESC LIMIT 60`).all();
+      const h = hoje();
+      const de = (url.searchParams.get('de') || addDias(h, -29)).slice(0, 10);
+      const ate = (url.searchParams.get('ate') || h).slice(0, 10);
+      const dias = Math.max(1, diffDias(ate, de) + 1);
+
+      // período anterior do mesmo tamanho, para comparar
+      const antAte = addDias(de, -1);
+      const antDe = addDias(antAte, -(dias - 1));
+
+      // dia a dia até ~2 meses; depois mês a mês
+      const porDia = dias <= 62;
+      const chave = porDia ? 'substr(data,1,10)' : 'substr(data,1,7)';
+
+      const serie = await env.DB.prepare(
+        `SELECT ${chave} AS rotulo, SUM(valor_brl) total_brl, COUNT(*) qtd
+           FROM pagamentos WHERE data BETWEEN ? AND ?
+          GROUP BY rotulo ORDER BY rotulo ASC`).bind(de, ate).all();
+
+      const porMoeda = await env.DB.prepare(
+        `SELECT moeda, SUM(valor) total, SUM(valor_brl) total_brl, COUNT(*) qtd
+           FROM pagamentos WHERE data BETWEEN ? AND ? GROUP BY moeda
+          ORDER BY total_brl DESC`).bind(de, ate).all();
+
+      const totalPeriodo = await env.DB.prepare(
+        `SELECT COALESCE(SUM(valor_brl),0) total, COUNT(*) qtd,
+                COUNT(DISTINCT paciente_id) pessoas
+           FROM pagamentos WHERE data BETWEEN ? AND ?`).bind(de, ate).first();
+
+      const totalAnterior = await env.DB.prepare(
+        `SELECT COALESCE(SUM(valor_brl),0) total FROM pagamentos WHERE data BETWEEN ? AND ?`)
+        .bind(antDe, antAte).first();
+
+      const porForma = await env.DB.prepare(
+        `SELECT COALESCE(NULLIF(forma,''),'não informado') forma,
+                SUM(valor_brl) total_brl, COUNT(*) qtd
+           FROM pagamentos WHERE data BETWEEN ? AND ?
+          GROUP BY forma ORDER BY total_brl DESC`).bind(de, ate).all();
+
+      // plano e país vêm do contrato do pagamento
+      const porPlano = await env.DB.prepare(
+        `SELECT COALESCE(NULLIF(c.codigo_plano,''),'sem plano') plano,
+                SUM(pg.valor_brl) total_brl, COUNT(DISTINCT c.id) contratos
+           FROM pagamentos pg
+           JOIN parcelas p  ON p.id=pg.parcela_id
+           JOIN contratos c ON c.id=p.contrato_id
+          WHERE pg.data BETWEEN ? AND ?
+          GROUP BY plano ORDER BY total_brl DESC LIMIT 12`).bind(de, ate).all();
+
+      const porPais = await env.DB.prepare(
+        `SELECT COALESCE(NULLIF(pa.pais,''),'não informado') pais,
+                SUM(pg.valor_brl) total_brl, COUNT(DISTINCT pa.id) pessoas
+           FROM pagamentos pg JOIN pacientes pa ON pa.id=pg.paciente_id
+          WHERE pg.data BETWEEN ? AND ?
+          GROUP BY pais ORDER BY total_brl DESC LIMIT 10`).bind(de, ate).all();
+
+      // contratos fechados no período: ticket médio
+      const vendas = await env.DB.prepare(
+        `SELECT COUNT(*) qtd, COALESCE(SUM(valor_cobrado),0) total, moeda
+           FROM contratos WHERE data_inicial BETWEEN ? AND ? GROUP BY moeda`).bind(de, ate).all();
+
+      // a receber é foto de agora, não depende do período
       const aReceber = await env.DB.prepare(
         `SELECT p.moeda, SUM(p.valor-p.pago) total, COUNT(*) qtd
            FROM parcelas p
@@ -910,16 +970,33 @@ export async function onRequest(context) {
           WHERE p.status IN ('aberta','parcial') AND c.status='ativo'
             AND pa.status NOT IN ('encerrado','parceria')
           GROUP BY p.moeda`).all();
-      const porPlano = await env.DB.prepare(
-        `SELECT codigo_plano, COUNT(*) qtd, SUM(valor_cobrado) total, moeda
-           FROM contratos GROUP BY codigo_plano, moeda ORDER BY qtd DESC`).all();
-      const porPais = await env.DB.prepare(
-        `SELECT pa.pais, COUNT(DISTINCT pa.id) pacientes FROM pacientes pa GROUP BY pa.pais`).all();
+
+      const atrasado = await env.DB.prepare(
+        `SELECT COALESCE(SUM(p.valor-p.pago),0) total, COUNT(*) qtd
+           FROM parcelas p
+           JOIN contratos c ON c.id=p.contrato_id
+           JOIN pacientes pa ON pa.id=p.paciente_id
+          WHERE p.status IN ('aberta','parcial') AND p.vencimento < ?
+            AND c.status='ativo' AND pa.status NOT IN ('encerrado','parceria')`).bind(h).first();
+
+      // histórico longo para o gráfico de tendência
+      const porMes = await env.DB.prepare(
+        `SELECT substr(data,1,7) mes, SUM(valor_brl) total_brl
+           FROM pagamentos GROUP BY mes ORDER BY mes DESC LIMIT 18`).all();
+
       return json({
-        por_mes: porMes.results || [],
-        a_receber: aReceber.results || [],
+        de, ate, dias, granularidade: porDia ? 'dia' : 'mes',
+        anterior: { de: antDe, ate: antAte, total: (totalAnterior && totalAnterior.total) || 0 },
+        total: totalPeriodo || { total: 0, qtd: 0, pessoas: 0 },
+        serie: serie.results || [],
+        por_moeda: porMoeda.results || [],
+        por_forma: porForma.results || [],
         por_plano: porPlano.results || [],
         por_pais: porPais.results || [],
+        vendas: vendas.results || [],
+        a_receber: aReceber.results || [],
+        atrasado: atrasado || { total: 0, qtd: 0 },
+        por_mes: (porMes.results || []).reverse(),
       });
     }
 

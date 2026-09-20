@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS pacientes (
   parceiro_id  INTEGER,
   indicacao    TEXT,
   obs          TEXT,
+  sexo         TEXT,
+  altura_cm    REAL,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -244,3 +246,6 @@ INSERT OR IGNORE INTO motivos_perda (nome,aplica,posicao) VALUES
 INSERT OR IGNORE INTO settings (key,value) VALUES
  ('renovacao_antecedencia','30'),
  ('origens','Direct,Indicação,Formulário,Anúncio,Outro');
+INSERT OR IGNORE INTO settings (key,value) VALUES
+ ('fatores_f','Sedentário:1.40|Leve:1.55|Moderado:1.70|Intenso:2.00'),
+ ('fatores_m','Sedentário:1.40|Leve:1.56|Moderado:1.78|Intenso:2.10');
