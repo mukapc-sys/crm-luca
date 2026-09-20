@@ -236,13 +236,15 @@ export async function onRequest(context) {
       const diasFollow = Number((await env.DB.prepare(
         "SELECT value v FROM settings WHERE key='followup_dias_alerta'").first())?.v || 10);
 
+      // Follow-up é quem JÁ foi atendido e sumiu. Quem nunca teve ficha não é
+      // atraso de acompanhamento — seria a base inteira no primeiro dia de uso.
       const semRegistro = await env.DB.prepare(
-        `SELECT pa.id,pa.nome,pa.apelido,pa.cod,pa.telefone,
-                (SELECT MAX(data) FROM consultas WHERE paciente_id=pa.id) ultima
+        `SELECT pa.id,pa.nome,pa.apelido,pa.cod,pa.telefone, uc.ultima
            FROM pacientes pa
-          WHERE pa.status='ativo'
-            AND (ultima IS NULL OR ultima <= ?)
-          ORDER BY ultima ASC LIMIT 50`).bind(addDias(h, -diasFollow)).all();
+           JOIN (SELECT paciente_id, MAX(data) AS ultima FROM consultas GROUP BY paciente_id) uc
+             ON uc.paciente_id = pa.id
+          WHERE pa.status='ativo' AND uc.ultima <= ?
+          ORDER BY uc.ultima ASC LIMIT 50`).bind(addDias(h, -diasFollow)).all();
 
       const vencendo = await env.DB.prepare(
         `SELECT c.id contrato_id,c.data_final,c.codigo_plano,
@@ -264,14 +266,58 @@ export async function onRequest(context) {
           GROUP BY p.moeda`).all();
 
       const mesAtual = h.slice(0, 7);
+      const mesAnterior = h.slice(0, 8) === h.slice(0, 8)
+        ? addDias(h.slice(0, 8) + '01', -1).slice(0, 7) : mesAtual;
       const recebido = await env.DB.prepare(
         `SELECT moeda, SUM(valor) total, SUM(valor_brl) total_brl
            FROM pagamentos WHERE substr(data,1,7)=? GROUP BY moeda`).bind(mesAtual).all();
+      const recebidoAnt = await env.DB.prepare(
+        `SELECT SUM(valor_brl) total_brl FROM pagamentos WHERE substr(data,1,7)=?`)
+        .bind(mesAnterior).first();
+
+      // --- venda: o dia do Luca ---
+      const calls = await env.DB.prepare(
+        `SELECT n.id, n.call_em, n.tipo, n.origem, n.valor_previsto, n.moeda,
+                pa.id paciente_id, pa.nome, pa.apelido, pa.cod, pa.telefone, pa.objetivo
+           FROM negociacoes n JOIN pacientes pa ON pa.id=n.paciente_id
+          WHERE n.etapa='call_agendada' AND substr(n.call_em,1,10) <= ?
+          ORDER BY n.call_em ASC LIMIT 50`).bind(em7).all();
+
+      const followVenda = await env.DB.prepare(
+        `SELECT n.id, n.tipo, n.proximo_contato, n.motivo, n.obs, n.valor_previsto, n.moeda,
+                pa.id paciente_id, pa.nome, pa.apelido, pa.cod, pa.telefone
+           FROM negociacoes n JOIN pacientes pa ON pa.id=n.paciente_id
+          WHERE n.etapa='follow_up' AND n.proximo_contato <= ?
+          ORDER BY n.proximo_contato ASC LIMIT 50`).bind(h).all();
+
+      const renovar = await env.DB.prepare(
+        `SELECT n.id, n.etapa, n.proximo_contato, n.valor_previsto, n.moeda,
+                c.data_final, c.codigo_plano,
+                pa.id paciente_id, pa.nome, pa.apelido, pa.cod, pa.telefone
+           FROM negociacoes n
+           JOIN pacientes pa ON pa.id=n.paciente_id
+           LEFT JOIN contratos c ON c.id=n.contrato_origem
+          WHERE n.tipo='renovacao' AND n.etapa IN ('a_abordar','abordado','follow_up')
+          ORDER BY c.data_final ASC LIMIT 50`).all();
+
+      const mesIni = mesAtual + '-01';
+      const funilMes = await env.DB.prepare(
+        `SELECT
+           SUM(CASE WHEN substr(call_em,1,10) BETWEEN ? AND ? THEN 1 ELSE 0 END) calls,
+           SUM(CASE WHEN etapa='fechou'  AND substr(fechado_em,1,7)=? THEN 1 ELSE 0 END) fechou,
+           SUM(CASE WHEN etapa='perdido' AND substr(fechado_em,1,7)=? THEN 1 ELSE 0 END) perdeu
+         FROM negociacoes WHERE tipo='novo'`).bind(mesIni, h, mesAtual, mesAtual).first();
 
       return json({
         hoje: h,
         cobrancas: listaCob,
         agenda: agenda.results || [],
+        calls: (calls.results || []).map((r) => ({
+          ...r, dias: diffDias((r.call_em || '').slice(0, 10), h) })),
+        follow_venda: (followVenda.results || []).map((r) => ({
+          ...r, dias: diffDias(r.proximo_contato, h) })),
+        renovacoes: (renovar.results || []).map((r) => ({
+          ...r, dias: r.data_final ? diffDias(r.data_final, h) : null })),
         followups: (semRegistro.results || []).map((r) => ({
           ...r, dias_sem_registro: r.ultima ? diffDias(h, r.ultima) : null,
         })),
@@ -279,6 +325,228 @@ export async function onRequest(context) {
         status: st.results || [],
         a_receber: aReceber.results || [],
         recebido_mes: recebido.results || [],
+        recebido_mes_anterior: (recebidoAnt && recebidoAnt.total_brl) || 0,
+        funil_mes: funilMes || { calls: 0, fechou: 0, perdeu: 0 },
+      });
+    }
+
+    // ==========================================================
+    // FUNIL — leads novos e renovações
+    // ==========================================================
+    const ETAPAS_NOVO = ['novo', 'call_agendada', 'follow_up', 'fechou', 'perdido'];
+    const ETAPAS_RENOV = ['a_abordar', 'abordado', 'follow_up', 'renovou', 'saiu'];
+
+    // cria a negociação de renovação dos contratos que estão terminando
+    if (rota === '/funil/sincronizar' && metodo === 'POST') {
+      const dias = Number((await env.DB.prepare(
+        "SELECT value v FROM settings WHERE key='renovacao_antecedencia'").first())?.v || 30);
+      const limite = addDias(hoje(), dias);
+      const alvos = await env.DB.prepare(
+        `SELECT c.id, c.paciente_id, c.valor_cobrado, c.moeda, c.plano_id
+           FROM contratos c
+           JOIN pacientes pa ON pa.id=c.paciente_id
+          WHERE c.status='ativo' AND c.data_final BETWEEN ? AND ?
+            AND pa.status NOT IN ('encerrado','parceria')
+            AND NOT EXISTS (SELECT 1 FROM negociacoes n WHERE n.contrato_origem=c.id)
+          LIMIT 200`).bind(hoje(), limite).all();
+      let criadas = 0;
+      for (const c of (alvos.results || [])) {
+        await env.DB.prepare(
+          `INSERT INTO negociacoes (paciente_id,tipo,etapa,contrato_origem,plano_id,valor_previsto,moeda)
+           VALUES (?,'renovacao','a_abordar',?,?,?,?)`
+        ).bind(c.paciente_id, c.id, c.plano_id || null, c.valor_cobrado || 0, c.moeda || 'BRL').run();
+        criadas++;
+      }
+      return json({ ok: true, criadas });
+    }
+
+    if (rota === '/funil' && metodo === 'GET') {
+      const tipo = url.searchParams.get('tipo') || 'novo';
+      const h = hoje();
+      const r = await env.DB.prepare(
+        `SELECT n.*, pa.nome, pa.apelido, pa.cod, pa.telefone, pa.pais, pa.objetivo, pa.instagram,
+                c.data_final, c.codigo_plano AS plano_anterior
+           FROM negociacoes n
+           JOIN pacientes pa ON pa.id=n.paciente_id
+           LEFT JOIN contratos c ON c.id=n.contrato_origem
+          WHERE n.tipo=?
+          ORDER BY COALESCE(n.proximo_contato, substr(n.call_em,1,10), c.data_final, n.created_at) ASC
+          LIMIT 500`).bind(tipo).all();
+      const motivos = await env.DB.prepare(
+        `SELECT * FROM motivos_perda WHERE ativo=1 AND aplica IN ('ambos',?) ORDER BY posicao`)
+        .bind(tipo).all();
+      return json({
+        negociacoes: (r.results || []).map((x) => ({
+          ...x,
+          atrasado: !!(x.proximo_contato && x.proximo_contato < h),
+          dias_contato: x.proximo_contato ? diffDias(x.proximo_contato, h) : null,
+        })),
+        etapas: tipo === 'renovacao' ? ETAPAS_RENOV : ETAPAS_NOVO,
+        motivos: motivos.results || [],
+      });
+    }
+
+    // novo lead: cria a pessoa e a negociação juntas
+    if (rota === '/funil' && metodo === 'POST') {
+      const b = body;
+      if (!b.nome) return bad('Informe o nome.');
+      let pid = b.paciente_id;
+      if (!pid) {
+        const r = await env.DB.prepare(
+          `INSERT INTO pacientes (nome,apelido,pais,telefone,email,instagram,objetivo,status,indicacao)
+           VALUES (?,?,?,?,?,?,?, 'lead', ?)`
+        ).bind(b.nome.trim(), b.apelido || null, b.pais || 'Brasil', b.telefone || null,
+          b.email || null, b.instagram || null, b.objetivo || null, b.indicacao || null).run();
+        pid = r.meta.last_row_id;
+      }
+      const res = await env.DB.prepare(
+        `INSERT INTO negociacoes (paciente_id,tipo,etapa,origem,call_em,proximo_contato,
+             plano_id,valor_previsto,moeda,obs)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`
+      ).bind(pid, b.tipo || 'novo', b.etapa || (b.call_em ? 'call_agendada' : 'novo'),
+        b.origem || 'Direct', b.call_em || null, b.proximo_contato || null,
+        b.plano_id || null, num(b.valor_previsto), b.moeda || 'BRL', b.obs || null).run();
+      return json({ ok: true, id: res.meta.last_row_id, paciente_id: pid });
+    }
+
+    if (rota.startsWith('/funil/') && seg.length === 2 && metodo === 'PUT') {
+      const id = seg[1]; const b = body;
+      const n = await env.DB.prepare('SELECT * FROM negociacoes WHERE id=?').bind(id).first();
+      if (!n) return bad('Negociação não encontrada.', 404);
+
+      const etapa = b.etapa || n.etapa;
+      const terminal = ['fechou', 'perdido', 'renovou', 'saiu'].includes(etapa);
+      const fechadoEm = terminal ? (b.fechado_em || hoje()) : null;
+
+      await env.DB.prepare(
+        `UPDATE negociacoes SET etapa=?, origem=?, call_em=?, proximo_contato=?, motivo=?,
+             plano_id=?, valor_previsto=?, moeda=?, obs=?, fechado_em=?, updated_at=datetime('now')
+         WHERE id=?`
+      ).bind(etapa, b.origem ?? n.origem, b.call_em ?? n.call_em,
+        etapa === 'follow_up' ? (b.proximo_contato ?? n.proximo_contato) : null,
+        terminal ? (b.motivo ?? n.motivo) : null,
+        b.plano_id ?? n.plano_id, b.valor_previsto != null ? num(b.valor_previsto) : n.valor_previsto,
+        b.moeda ?? n.moeda, b.obs ?? n.obs, fechadoEm, id).run();
+
+      // registra o toque no histórico
+      if (b.interacao) {
+        await env.DB.prepare(
+          `INSERT INTO interacoes (negociacao_id,paciente_id,tipo,data,resultado,obs)
+           VALUES (?,?,?,?,?,?)`
+        ).bind(id, n.paciente_id, b.interacao.tipo || 'nota', b.interacao.data || hoje(),
+          b.interacao.resultado || etapa, b.interacao.obs || null).run();
+      }
+
+      // perdeu / não renovou: a pessoa sai de ativo
+      if (etapa === 'perdido') {
+        await env.DB.prepare(
+          "UPDATE pacientes SET status='encerrado', updated_at=datetime('now') WHERE id=? AND status='lead'")
+          .bind(n.paciente_id).run();
+      }
+      if (etapa === 'saiu' && n.contrato_origem) {
+        await env.DB.prepare("UPDATE contratos SET status='encerrado' WHERE id=?")
+          .bind(n.contrato_origem).run();
+      }
+      return json({ ok: true });
+    }
+
+    // fechar a venda: vira contrato de verdade
+    if (rota.startsWith('/funil/') && seg.length === 3 && seg[2] === 'fechar' && metodo === 'POST') {
+      const id = seg[1]; const b = body;
+      const n = await env.DB.prepare('SELECT * FROM negociacoes WHERE id=?').bind(id).first();
+      if (!n) return bad('Negociação não encontrada.', 404);
+
+      const plano = b.plano_id
+        ? await env.DB.prepare('SELECT * FROM planos WHERE id=?').bind(b.plano_id).first() : null;
+      const ini = b.data_inicial || hoje();
+      const fim = b.data_final || (plano ? addDias(ini, plano.dias) : addDias(ini, 30));
+      const moeda = b.moeda || MOEDA_POR_FORMA[(b.forma || '').toLowerCase()] || n.moeda || 'BRL';
+      const valor = b.valor_cobrado != null && b.valor_cobrado !== ''
+        ? num(b.valor_cobrado)
+        : (plano ? (moeda === 'USD' ? plano.preco_usd : plano.preco_brl) : num(n.valor_previsto));
+
+      const cr = await env.DB.prepare(
+        `INSERT INTO contratos (paciente_id,plano_id,codigo_plano,data_inicial,data_final,
+            valor_cobrado,moeda,forma,qtd_parcelas,status,obs)
+         VALUES (?,?,?,?,?,?,?,?,?, 'ativo', ?)`
+      ).bind(n.paciente_id, b.plano_id || null, plano ? plano.codigo : (b.codigo_plano || null),
+        ini, fim, valor, moeda, b.forma || null, Number(b.qtd_parcelas || 1), b.obs || null).run();
+
+      const contrato = await env.DB.prepare('SELECT * FROM contratos WHERE id=?')
+        .bind(cr.meta.last_row_id).first();
+      await gerarParcelas(env, contrato);
+
+      const etapa = n.tipo === 'renovacao' ? 'renovou' : 'fechou';
+      await env.DB.prepare(
+        `UPDATE negociacoes SET etapa=?, contrato_id=?, fechado_em=?, proximo_contato=NULL,
+             valor_previsto=?, moeda=?, updated_at=datetime('now') WHERE id=?`
+      ).bind(etapa, contrato.id, hoje(), valor, moeda, id).run();
+
+      await env.DB.prepare(
+        "UPDATE pacientes SET status='ativo', updated_at=datetime('now') WHERE id=?")
+        .bind(n.paciente_id).run();
+
+      // renovação fechada encerra o contrato anterior
+      if (n.contrato_origem) {
+        await env.DB.prepare("UPDATE contratos SET status='encerrado' WHERE id=?")
+          .bind(n.contrato_origem).run();
+      }
+
+      await env.DB.prepare(
+        `INSERT INTO interacoes (negociacao_id,paciente_id,tipo,data,resultado,obs)
+         VALUES (?,?,'call',?,?,?)`
+      ).bind(id, n.paciente_id, hoje(), etapa, b.obs || null).run();
+
+      return json({ ok: true, contrato_id: contrato.id, paciente_id: n.paciente_id });
+    }
+
+    if (rota.startsWith('/funil/') && seg.length === 2 && metodo === 'DELETE') {
+      const id = seg[1];
+      await env.DB.batch([
+        env.DB.prepare('DELETE FROM interacoes WHERE negociacao_id=?').bind(id),
+        env.DB.prepare('DELETE FROM negociacoes WHERE id=?').bind(id),
+      ]);
+      return json({ ok: true });
+    }
+
+    if (rota === '/motivos' && metodo === 'GET') {
+      const r = await env.DB.prepare('SELECT * FROM motivos_perda ORDER BY posicao, nome').all();
+      return json({ motivos: r.results || [] });
+    }
+    if (rota === '/motivos' && metodo === 'POST') {
+      await env.DB.prepare('INSERT OR IGNORE INTO motivos_perda (nome,aplica,posicao) VALUES (?,?,?)')
+        .bind(body.nome, body.aplica || 'ambos', Number(body.posicao || 99)).run();
+      return json({ ok: true });
+    }
+    if (rota.startsWith('/motivos/') && metodo === 'DELETE') {
+      await env.DB.prepare('DELETE FROM motivos_perda WHERE id=?').bind(seg[1]).run();
+      return json({ ok: true });
+    }
+
+    // relatório: por que perde
+    if (rota === '/funil/relatorio' && metodo === 'GET') {
+      const de = url.searchParams.get('de') || addDias(hoje(), -180);
+      const porMotivo = await env.DB.prepare(
+        `SELECT tipo, motivo, COUNT(*) qtd, SUM(valor_previsto) valor
+           FROM negociacoes
+          WHERE etapa IN ('perdido','saiu') AND fechado_em >= ?
+          GROUP BY tipo, motivo ORDER BY qtd DESC`).bind(de).all();
+      const conversao = await env.DB.prepare(
+        `SELECT tipo,
+                SUM(CASE WHEN etapa IN ('fechou','renovou') THEN 1 ELSE 0 END) ganhou,
+                SUM(CASE WHEN etapa IN ('perdido','saiu')   THEN 1 ELSE 0 END) perdeu,
+                SUM(CASE WHEN etapa IN ('fechou','renovou') THEN valor_previsto ELSE 0 END) valor_ganho
+           FROM negociacoes WHERE fechado_em >= ? GROUP BY tipo`).bind(de).all();
+      const porOrigem = await env.DB.prepare(
+        `SELECT origem, COUNT(*) qtd,
+                SUM(CASE WHEN etapa='fechou' THEN 1 ELSE 0 END) fechou
+           FROM negociacoes WHERE tipo='novo' AND created_at >= ?
+          GROUP BY origem ORDER BY qtd DESC`).bind(de).all();
+      return json({
+        de,
+        por_motivo: porMotivo.results || [],
+        conversao: conversao.results || [],
+        por_origem: porOrigem.results || [],
       });
     }
 

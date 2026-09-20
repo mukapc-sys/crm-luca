@@ -42,6 +42,14 @@ const zap = (tel, msg = '') => {
   window.open(`https://wa.me/${n}${msg ? '?text=' + encodeURIComponent(msg) : ''}`, '_blank');
 };
 
+// laranja = marcado · verde = realizado · vermelho = cancelado
+const CORES_COMPROMISSO = {
+  marcado:   { bg: '#FDF0DC', txt: '#8A5A00', borda: '#E09112' },
+  feito:     { bg: '#E3F3EA', txt: '#14653C', borda: '#1E8E5A' },
+  cancelado: { bg: '#FCECE9', txt: '#93261A', borda: '#C0392B' },
+};
+const ROTULO_COMPROMISSO = { marcado: 'Marcado', feito: 'Realizado', cancelado: 'Cancelado' };
+
 const OBJETIVOS = ['Emagrecimento', 'Definição muscular', 'Ganho de massa muscular', 'Manutenção do peso'];
 const STATUS = ['ativo', 'devendo', 'encerrado', 'parceria', 'lead'];
 const FORMAS = ['pix', 'asaas', 'infinity', 'zelle', 'paypal', 'outro'];
@@ -104,67 +112,95 @@ $$('#nav button').forEach((b) => { b.onclick = () => irPara(b.dataset.tela); });
 function irPara(t) {
   TELA = t;
   $$('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tela === t));
-  ({ home: telaHome, pacientes: telaPacientes, agenda: telaAgenda,
+  ({ home: telaHome, funil: telaFunil, pacientes: telaPacientes, agenda: telaAgenda,
      financeiro: telaFinanceiro, planos: telaPlanos, config: telaConfig }[t])();
 }
 
 /* ==========================================================
-   HOME
+   HOME — o dia do Luca
    ========================================================== */
 async function telaHome() {
   $('#tela').innerHTML = '<p class="vazio">Carregando…</p>';
+  await api('/funil/sincronizar', { method: 'POST', body: {} }).catch(() => {});
   const d = await api('/home');
   CACHE.home = d;
 
+  const h = d.hoje;
   const atrasadas = d.cobrancas.filter((c) => c.situacao === 'atrasada');
   const deHoje = d.cobrancas.filter((c) => c.situacao === 'hoje');
   const proximas = d.cobrancas.filter((c) => c.situacao === 'proxima');
-  const total = d.cobrancas.length + d.followups.length;
+  const callsHoje = d.calls.filter((c) => c.dias <= 0);
+
+  // o contador do menu é só o que precisa de ação HOJE
+  const agir = callsHoje.length + d.follow_venda.length + atrasadas.length + deHoje.length;
   const bd = $('#bdHome');
-  if (total) { bd.textContent = total; bd.classList.remove('hide'); } else bd.classList.add('hide');
+  if (agir) { bd.textContent = agir; bd.classList.remove('hide'); } else bd.classList.add('hide');
+  const bdF = $('#bdFunil');
+  const noFunil = d.calls.length + d.follow_venda.length + d.renovacoes.length;
+  if (noFunil) { bdF.textContent = noFunil; bdF.classList.remove('hide'); } else bdF.classList.add('hide');
 
   const cont = (s) => (d.status.find((x) => x.status === s) || {}).c || 0;
-  const receber = d.a_receber.map((r) => `<div>${money(r.total, r.moeda)} <small style="color:var(--txt-2)">· ${r.qtd} parcelas</small></div>`).join('') || '—';
-  const recebido = d.recebido_mes.map((r) => `<div>${money(r.total, r.moeda)}</div>`).join('') || money(0);
+  const fm = d.funil_mes || {};
+  const decididas = Number(fm.fechou || 0) + Number(fm.perdeu || 0);
+  const taxa = decididas ? Math.round((Number(fm.fechou || 0) / decididas) * 100) : null;
+
+  const recMes = d.recebido_mes.reduce((s, r) => s + Number(r.total_brl || 0), 0);
+  const recAnt = Number(d.recebido_mes_anterior || 0);
+  const varMes = recAnt ? Math.round(((recMes - recAnt) / recAnt) * 100) : null;
+  const receberLinhas = d.a_receber.map((r) => `${money(r.total, r.moeda)}`).join(' · ') || '—';
+
+  const prim = (n) => esc((n || '').split(' ')[0]);
+
+  const linhaCall = (c) => `
+    <div class="linha-aviso">
+      <span class="tag ${c.dias < 0 ? 'atrasada' : c.dias === 0 ? 'hoje' : 'proxima'}">
+        ${c.dias < 0 ? 'atrasada' : c.dias === 0 ? horaBR(c.call_em) || 'hoje' : dataBR(c.call_em)}</span>
+      <div class="txt"><b>${nomeCompleto(c)}</b>
+        <small>${esc(c.origem || 'Direct')}${c.objetivo ? ' · ' + esc(c.objetivo) : ''}${c.valor_previsto ? ' · ' + money(c.valor_previsto, c.moeda) : ''}</small></div>
+      <button class="btn zap mini" onclick="zap('${esc(c.telefone || '')}','Oi ${prim(c.nome)}! Tudo certo pra nossa call?')">WhatsApp</button>
+      <button class="btn mini" onclick="resultadoCall(${c.id})">Resultado</button>
+    </div>`;
+
+  const linhaFollow = (f) => `
+    <div class="linha-aviso">
+      <span class="tag ${f.dias < 0 ? 'atrasada' : 'hoje'}">${f.dias < 0 ? Math.abs(f.dias) + 'd atraso' : 'hoje'}</span>
+      <div class="txt"><b>${nomeCompleto(f)}</b>
+        <small>${f.tipo === 'renovacao' ? 'Renovação' : 'Não fechou na call'}${f.motivo ? ' · ' + esc(f.motivo) : ''}${f.obs ? ' · ' + esc(f.obs.slice(0, 50)) : ''}</small></div>
+      <button class="btn zap mini" onclick="zap('${esc(f.telefone || '')}','Oi ${prim(f.nome)}! Como combinamos, estou passando pra retomar nossa conversa.')">WhatsApp</button>
+      <button class="btn mini" onclick="resultadoCall(${f.id})">Resultado</button>
+    </div>`;
 
   const linhaCob = (c) => `
     <div class="linha-aviso">
       <span class="tag ${c.situacao}">${c.situacao === 'atrasada' ? Math.abs(c.dias) + 'd atraso' : c.situacao === 'hoje' ? 'hoje' : 'em ' + c.dias + 'd'}</span>
-      <div class="txt">
-        <b>${nomeCompleto(c)}</b>
-        <small>Parcela ${c.numero}/${c.total} · ${money(c.valor - c.pago, c.moeda)} · vence ${dataBR(c.vencimento)}</small>
-      </div>
-      <button class="btn zap mini" onclick="zap('${esc(c.telefone || '')}','Oi ${esc((c.nome || '').split(' ')[0])}! Passando pra lembrar da parcela ${c.numero}/${c.total} (${money(c.valor - c.pago, c.moeda)}), vencimento ${dataBR(c.vencimento)}.')">WhatsApp</button>
+      <div class="txt"><b>${nomeCompleto(c)}</b>
+        <small>Parcela ${c.numero}/${c.total} · ${money(c.valor - c.pago, c.moeda)} · vence ${dataBR(c.vencimento)}</small></div>
+      <button class="btn zap mini" onclick="zap('${esc(c.telefone || '')}','Oi ${prim(c.nome)}! Passando pra lembrar da parcela ${c.numero}/${c.total} (${money(c.valor - c.pago, c.moeda)}), vencimento ${dataBR(c.vencimento)}.')">WhatsApp</button>
       <button class="btn mini" onclick="abrirPagamento(${c.paciente_id},${c.id},${c.valor - c.pago},'${c.moeda}')">Receber</button>
     </div>`;
 
-  const linhaAg = (a) => `
+  const linhaRen = (r) => `
     <div class="linha-aviso">
-      <span class="tag">${horaBR(a.inicio) || 'dia todo'}</span>
-      <div class="txt"><b>${esc(a.titulo)}</b>
-        <small>${dataBR(a.inicio)}${a.paciente_nome ? ' · ' + esc(a.paciente_nome) : ''}${a.local ? ' · ' + esc(a.local) : ''}</small></div>
-      ${a.paciente_id ? `<button class="btn mini ghost" onclick="abrirPaciente(${a.paciente_id})">Abrir ficha</button>` : ''}
+      <span class="tag ${r.dias != null && r.dias <= 7 ? 'atrasada' : 'hoje'}">${r.dias != null ? r.dias + 'd' : '—'}</span>
+      <div class="txt"><b>${nomeCompleto(r)}</b>
+        <small>${esc(r.codigo_plano || 'Plano')} termina ${dataBR(r.data_final)} · ${ROTULO_ETAPA[r.etapa] || r.etapa}</small></div>
+      <button class="btn zap mini" onclick="zap('${esc(r.telefone || '')}','Oi ${prim(r.nome)}! Seu plano termina ${dataBR(r.data_final)}. Vamos falar da renovação?')">WhatsApp</button>
+      <button class="btn mini" onclick="resultadoCall(${r.id})">Resultado</button>
     </div>`;
 
-  const linhaFu = (f) => `
-    <div class="linha-aviso">
-      <span class="tag ${f.dias_sem_registro == null ? 'devendo' : 'hoje'}">${f.dias_sem_registro == null ? 'sem ficha' : f.dias_sem_registro + 'd'}</span>
-      <div class="txt"><b>${nomeCompleto(f)}</b>
-        <small>${f.dias_sem_registro == null ? 'Nenhuma consulta registrada' : 'Última consulta em ' + dataBR(f.ultima)}</small></div>
-      <button class="btn zap mini" onclick="zap('${esc(f.telefone || '')}','Oi ${esc((f.nome || '').split(' ')[0])}! Como está indo a rotina essa semana?')">WhatsApp</button>
-      <button class="btn mini" onclick="abrirConsulta(${f.id})">Nova ficha</button>
+  const linhaAg = (a) => {
+    const cor = CORES_COMPROMISSO[a.status] || CORES_COMPROMISSO.marcado;
+    const quem = a.paciente_apelido || a.paciente_nome;
+    return `<div class="linha-aviso">
+      <span class="tag" style="background:${cor.bg};color:${cor.txt}">${horaBR(a.inicio) || 'dia todo'}</span>
+      <div class="txt"><b>${esc(a.titulo)}${quem ? ` · ${esc(quem)}` : ''}</b>
+        <small>${dataBR(a.inicio)}${a.local ? ' · ' + esc(a.local) : ''}</small></div>
+      ${a.paciente_id ? `<button class="btn mini ghost" onclick="abrirPaciente(${a.paciente_id})">Ficha</button>` : ''}
     </div>`;
+  };
 
-  const linhaVc = (v) => `
-    <div class="linha-aviso">
-      <span class="tag ${v.dias <= 7 ? 'atrasada' : 'hoje'}">${v.dias}d</span>
-      <div class="txt"><b>${nomeCompleto(v)}</b>
-        <small>Plano ${esc(v.codigo_plano || '—')} termina em ${dataBR(v.data_final)}</small></div>
-      <button class="btn zap mini" onclick="zap('${esc(v.telefone || '')}','Oi ${esc((v.nome || '').split(' ')[0])}! Seu plano termina em ${dataBR(v.data_final)}. Vamos falar da renovação?')">WhatsApp</button>
-    </div>`;
-
-  const bloco = (titulo, itens, render, vazio) => `
-    <div class="card">
+  const bloco = (titulo, itens, render, vazio, destaque) => `
+    <div class="card"${destaque && itens.length ? ' style="border-color:var(--ouro);border-width:2px"' : ''}>
       <h3>${titulo} ${itens.length ? `<span class="tag" style="margin-left:6px">${itens.length}</span>` : ''}</h3>
       ${itens.length ? itens.map(render).join('') : `<p class="vazio">${vazio}</p>`}
     </div>`;
@@ -174,23 +210,402 @@ async function telaHome() {
       <div><h1>Início</h1><p>${new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric', timeZone: 'America/Sao_Paulo' })}</p></div>
       <div class="dir">
         <button class="btn ghost" onclick="abrirCompromisso()">+ Compromisso</button>
+        <button class="btn ghost" onclick="novoLead()">+ Lead</button>
         <button class="btn ouro" onclick="abrirPaciente()">+ Paciente</button>
       </div>
     </div>
 
     <div class="grid g4" style="margin-bottom:16px">
-      <div class="kpi"><span>Ativos</span><b>${cont('ativo')}</b></div>
-      <div class="kpi"><span>Devendo</span><b style="color:var(--erro)">${cont('devendo')}</b></div>
-      <div class="kpi"><span>A receber</span><b style="font-size:17px;line-height:1.5">${receber}</b></div>
-      <div class="kpi"><span>Recebido no mês</span><b style="font-size:17px;line-height:1.5">${recebido}</b></div>
+      <div class="kpi"><span>Fechamento do mês</span>
+        <b>${taxa != null ? taxa + '%' : '—'}</b>
+        <small style="color:var(--txt-2)">${fm.fechou || 0} de ${decididas || 0} calls decididas</small></div>
+      <div class="kpi"><span>Recebido no mês</span>
+        <b style="font-size:21px">${money(recMes, 'BRL')}</b>
+        <small style="color:${varMes == null ? 'var(--txt-2)' : varMes >= 0 ? 'var(--ok)' : 'var(--erro)'}">
+          ${varMes == null ? 'sem base anterior' : `${varMes >= 0 ? '+' : ''}${varMes}% vs mês passado`}</small></div>
+      <div class="kpi"><span>A receber</span>
+        <b style="font-size:17px;line-height:1.4">${receberLinhas}</b>
+        <small style="color:var(--txt-2)">${d.a_receber.reduce((s, r) => s + Number(r.qtd || 0), 0)} parcelas</small></div>
+      <div class="kpi"><span>Pacientes ativos</span>
+        <b>${cont('ativo')}</b>
+        <small style="color:${d.renovacoes.length ? 'var(--alerta)' : 'var(--txt-2)'}">
+          ${d.renovacoes.length} em renovação</small></div>
     </div>
 
     <div class="grid g2">
-      ${bloco('Cobranças', [...atrasadas, ...deHoje, ...proximas], linhaCob, 'Nada a cobrar nos próximos 7 dias.')}
+      ${bloco('Calls', [...callsHoje, ...d.calls.filter((c) => c.dias > 0)], linhaCall,
+        'Nenhuma call agendada. Hora de prospectar.', true)}
+      ${bloco('Follow-ups combinados para hoje', d.follow_venda, linhaFollow,
+        'Nenhum follow-up para hoje.', true)}
+      ${bloco('Cobranças', [...atrasadas, ...deHoje, ...proximas], linhaCob,
+        'Nada a cobrar nos próximos 7 dias.')}
+      ${bloco('Renovações em aberto', d.renovacoes, linhaRen,
+        'Nenhum plano terminando nos próximos 30 dias.')}
       ${bloco('Agenda dos próximos 7 dias', d.agenda, linhaAg, 'Nenhum compromisso marcado.')}
-      ${bloco('Follow-up — sem registro recente', d.followups, linhaFu, 'Todos os pacientes em dia.')}
-      ${bloco('Planos vencendo em 30 dias', d.vencendo, linhaVc, 'Nenhum plano vencendo.')}
+      ${bloco('Pacientes sem consulta recente', d.followups, (f) => `
+        <div class="linha-aviso">
+          <span class="tag ${f.dias_sem_registro > 30 ? 'atrasada' : 'hoje'}">${f.dias_sem_registro}d</span>
+          <div class="txt"><b>${nomeCompleto(f)}</b>
+            <small>Última consulta em ${dataBR(f.ultima)}</small></div>
+          <button class="btn mini" onclick="abrirConsulta(${f.id})">Nova ficha</button>
+        </div>`, 'Acompanhamento em dia.')}
     </div>`;
+}
+
+/* ==========================================================
+   FUNIL — leads novos e renovações
+   ========================================================== */
+const ROTULO_ETAPA = {
+  novo: 'Chegou no direct', call_agendada: 'Call agendada', follow_up: 'Follow-up',
+  fechou: 'Fechou', perdido: 'Perdido',
+  a_abordar: 'A abordar', abordado: 'Abordado', renovou: 'Renovou', saiu: 'Não renovou',
+};
+const COR_ETAPA = {
+  novo: 'lead', call_agendada: 'hoje', follow_up: 'parceria', fechou: 'ativo', perdido: 'devendo',
+  a_abordar: 'lead', abordado: 'hoje', renovou: 'ativo', saiu: 'devendo',
+};
+let FUNIL_TIPO = 'novo';
+
+async function telaFunil() {
+  $('#tela').innerHTML = '<p class="vazio">Carregando…</p>';
+  await api('/funil/sincronizar', { method: 'POST', body: {} }).catch(() => {});
+  const d = await api('/funil?tipo=' + FUNIL_TIPO);
+  CACHE.motivos = d.motivos;
+  const h = hojeISO();
+
+  const abertas = d.etapas.filter((e) => !['fechou', 'perdido', 'renovou', 'saiu'].includes(e));
+  const porEtapa = {};
+  d.etapas.forEach((e) => { porEtapa[e] = []; });
+  d.negociacoes.forEach((n) => { (porEtapa[n.etapa] = porEtapa[n.etapa] || []).push(n); });
+
+  const ganhou = FUNIL_TIPO === 'novo' ? 'fechou' : 'renovou';
+  const perdeu = FUNIL_TIPO === 'novo' ? 'perdido' : 'saiu';
+  const emAberto = abertas.reduce((s, e) => s + porEtapa[e].length, 0);
+  const valorAberto = abertas.reduce((s, e) =>
+    s + porEtapa[e].reduce((a, n) => a + Number(n.valor_previsto || 0), 0), 0);
+  const decididas = porEtapa[ganhou].length + porEtapa[perdeu].length;
+  const taxa = decididas ? Math.round((porEtapa[ganhou].length / decididas) * 100) : null;
+  const atrasados = d.negociacoes.filter((n) => n.atrasado).length;
+
+  const card = (n) => `
+    <div class="card" style="padding:11px;margin-bottom:8px;${n.atrasado ? 'border-color:var(--erro)' : ''}"
+         onclick="abrirNegociacao(${n.id})">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        ${n.cod ? `<span class="cod">${esc(n.cod)}</span>` : ''}
+        <b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(n.nome)}</b>
+        ${n.valor_previsto ? `<span style="font-size:12.5px;font-weight:650">${money(n.valor_previsto, n.moeda)}</span>` : ''}
+      </div>
+      ${n.apelido ? `<div class="apelido" style="margin-bottom:3px">“${esc(n.apelido)}”</div>` : ''}
+      <div style="font-size:12px;color:var(--txt-2);line-height:1.5">
+        ${n.call_em && n.etapa === 'call_agendada' ? `Call ${dataBR(n.call_em)} ${horaBR(n.call_em)}<br>` : ''}
+        ${n.proximo_contato ? `<span style="color:${n.atrasado ? 'var(--erro)' : 'var(--alerta)'};font-weight:650">
+          Retomar ${dataBR(n.proximo_contato)}${n.atrasado ? ` (${Math.abs(n.dias_contato)}d atraso)` : ''}</span><br>` : ''}
+        ${n.data_final ? `Plano ${esc(n.plano_anterior || '')} termina ${dataBR(n.data_final)}<br>` : ''}
+        ${n.origem ? esc(n.origem) : ''}${n.objetivo ? ' · ' + esc(n.objetivo) : ''}
+        ${n.motivo ? `<br><span style="color:var(--erro)">${esc(n.motivo)}</span>` : ''}
+      </div>
+    </div>`;
+
+  const coluna = (e) => `
+    <div style="min-width:0">
+      <div style="display:flex;align-items:center;gap:7px;margin-bottom:9px;padding-bottom:7px;
+                  border-bottom:2px solid var(--linha)">
+        <b style="font-size:13px">${ROTULO_ETAPA[e]}</b>
+        <span class="tag ${COR_ETAPA[e]}">${porEtapa[e].length}</span>
+      </div>
+      ${porEtapa[e].length ? porEtapa[e].map(card).join('')
+        : '<p style="font-size:12.5px;color:var(--txt-2);padding:10px 0">—</p>'}
+    </div>`;
+
+  $('#tela').innerHTML = `
+    <div class="topo">
+      <div><h1>Funil</h1><p>${emAberto} em aberto${valorAberto ? ' · ' + money(valorAberto, 'BRL') + ' previstos' : ''}${atrasados ? ` · <b style="color:var(--erro)">${atrasados} com follow-up atrasado</b>` : ''}</p></div>
+      <div class="dir">
+        <button class="btn ghost" onclick="relatorioFunil()">Por que perde</button>
+        <button class="btn ouro" onclick="novoLead()">+ Lead</button>
+      </div>
+    </div>
+
+    <div class="abas" id="abasFunil">
+      <button class="${FUNIL_TIPO === 'novo' ? 'on' : ''}" onclick="FUNIL_TIPO='novo';telaFunil()">Leads novos</button>
+      <button class="${FUNIL_TIPO === 'renovacao' ? 'on' : ''}" onclick="FUNIL_TIPO='renovacao';telaFunil()">Renovações</button>
+    </div>
+
+    <div class="grid g3" style="margin-bottom:16px">
+      <div class="kpi"><span>Em aberto</span><b>${emAberto}</b>
+        <small style="color:var(--txt-2)">${money(valorAberto, 'BRL')} previstos</small></div>
+      <div class="kpi"><span>Taxa de fechamento</span><b>${taxa != null ? taxa + '%' : '—'}</b>
+        <small style="color:var(--txt-2)">${porEtapa[ganhou].length} ganhas · ${porEtapa[perdeu].length} perdidas</small></div>
+      <div class="kpi"><span>Follow-up atrasado</span>
+        <b style="color:${atrasados ? 'var(--erro)' : 'var(--txt)'}">${atrasados}</b>
+        <small style="color:var(--txt-2)">passou da data combinada</small></div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(${abertas.length},minmax(210px,1fr));gap:14px;overflow-x:auto;padding-bottom:8px">
+      ${abertas.map(coluna).join('')}
+    </div>
+
+    <div class="grid g2" style="margin-top:20px">
+      <div class="card"><h3>${ROTULO_ETAPA[ganhou]} <span class="tag ativo">${porEtapa[ganhou].length}</span></h3>
+        ${porEtapa[ganhou].slice(0, 12).map((n) => `<div class="linha-aviso">
+          <div class="txt"><b>${nomeCompleto(n)}</b>
+            <small>${n.fechado_em ? dataBR(n.fechado_em) : ''}${n.valor_previsto ? ' · ' + money(n.valor_previsto, n.moeda) : ''}</small></div>
+          <button class="btn mini ghost" onclick="abrirPaciente(${n.paciente_id})">Ficha</button>
+        </div>`).join('') || '<p class="vazio">—</p>'}</div>
+      <div class="card"><h3>${ROTULO_ETAPA[perdeu]} <span class="tag devendo">${porEtapa[perdeu].length}</span></h3>
+        ${porEtapa[perdeu].slice(0, 12).map((n) => `<div class="linha-aviso">
+          <div class="txt"><b>${nomeCompleto(n)}</b>
+            <small>${n.fechado_em ? dataBR(n.fechado_em) : ''}${n.motivo ? ' · ' + esc(n.motivo) : ''}</small></div>
+          <button class="btn mini ghost" onclick="abrirNegociacao(${n.id})">Reabrir</button>
+        </div>`).join('') || '<p class="vazio">—</p>'}</div>
+    </div>`;
+}
+
+/* ---------- novo lead ---------- */
+async function novoLead() {
+  if (!PLANOS.length) PLANOS = (await api('/planos')).planos;
+  const origens = ['Direct', 'Indicação', 'Formulário', 'Anúncio', 'Outro'];
+  const corpo = `
+    <div class="grid g2">
+      <div><label>Nome *</label><input id="nlNome"></div>
+      <div><label>Apelido interno</label><input id="nlApelido"></div>
+      <div><label>WhatsApp (com DDI)</label><input id="nlTel" placeholder="+55 51 99999-9999"></div>
+      <div><label>Instagram</label><input id="nlInsta"></div>
+      <div><label>País</label><select id="nlPais">
+        <option>Brasil</option><option value="US">Estados Unidos</option><option value="Outro">Outro</option></select></div>
+      <div><label>Como chegou</label><select id="nlOrigem">${origens.map((o) => `<option>${o}</option>`).join('')}</select></div>
+      <div><label>Plano de interesse</label><select id="nlPlano">
+        <option value="">—</option>
+        ${PLANOS.filter((p) => p.ativo).map((p) => `<option value="${p.id}" data-brl="${p.preco_brl}" data-usd="${p.preco_usd}">${esc(p.codigo)} — ${esc(p.nome)}</option>`).join('')}
+      </select></div>
+      <div><label>Valor previsto</label><input id="nlValor" type="number" step="0.01"></div>
+      <div><label>Call agendada para</label><input id="nlCall" type="datetime-local"></div>
+      <div><label>Objetivo</label><select id="nlObj">
+        <option value="">—</option>${OBJETIVOS.map((o) => `<option>${o}</option>`).join('')}</select></div>
+    </div>
+    <div style="margin-top:10px"><label>Observações da conversa</label><textarea id="nlObs"></textarea></div>
+    <p style="font-size:12.5px;color:var(--txt-2);margin:10px 0 0">
+      Com data de call preenchida o lead já entra em "Call agendada". Sem data, fica em "Chegou no direct".</p>`;
+
+  modal('Novo lead', corpo, `
+    <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
+    <button class="btn ouro" id="salvarLead">Criar</button>`);
+
+  $('#nlPlano').onchange = () => {
+    const op = $('#nlPlano').selectedOptions[0];
+    if (!op || !op.value) return;
+    const usd = $('#nlPais').value === 'US';
+    const v = usd ? op.dataset.usd : op.dataset.brl;
+    if (Number(v) > 0) $('#nlValor').value = v;
+  };
+
+  $('#salvarLead').onclick = async () => {
+    const nome = $('#nlNome').value.trim();
+    if (!nome) return toast('Informe o nome.');
+    try {
+      await api('/funil', { method: 'POST', body: {
+        nome, apelido: $('#nlApelido').value.trim(), telefone: $('#nlTel').value.trim(),
+        instagram: $('#nlInsta').value.trim(), pais: $('#nlPais').value,
+        objetivo: $('#nlObj').value, origem: $('#nlOrigem').value,
+        plano_id: $('#nlPlano').value || null, valor_previsto: $('#nlValor').value,
+        moeda: $('#nlPais').value === 'US' ? 'USD' : 'BRL',
+        call_em: $('#nlCall').value || null, obs: $('#nlObs').value.trim(),
+      } });
+      fecharModal(); toast('Lead criado');
+      CACHE.pacientes = null;
+      TELA === 'funil' ? telaFunil() : telaHome();
+    } catch (e) { toast(e.message); }
+  };
+}
+
+/* ---------- abrir / mover uma negociação ---------- */
+async function abrirNegociacao(id) {
+  const d = await api('/funil?tipo=' + FUNIL_TIPO);
+  const n = d.negociacoes.find((x) => x.id === id);
+  if (!n) return toast('Negociação não encontrada.');
+  CACHE.motivos = d.motivos;
+
+  const corpo = `
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <span class="tag ${COR_ETAPA[n.etapa]}">${ROTULO_ETAPA[n.etapa]}</span>
+        ${n.valor_previsto ? `<b>${money(n.valor_previsto, n.moeda)}</b>` : ''}
+        ${n.origem ? `<span class="tag">${esc(n.origem)}</span>` : ''}
+        ${n.telefone ? `<button class="btn zap mini" style="margin-left:auto"
+          onclick="zap('${esc(n.telefone)}')">WhatsApp</button>` : ''}
+      </div>
+      ${n.objetivo ? `<div style="margin-top:8px"><label>Objetivo</label><div>${esc(n.objetivo)}</div></div>` : ''}
+      ${n.data_final ? `<div style="margin-top:8px"><label>Plano atual</label>
+        <div>${esc(n.plano_anterior || '—')} · termina ${dataBR(n.data_final)}</div></div>` : ''}
+      ${n.obs ? `<div style="margin-top:8px"><label>Observações</label><div>${esc(n.obs)}</div></div>` : ''}
+    </div>
+    <div class="grid g2">
+      <div><label>Etapa</label><select id="ngEtapa">
+        ${d.etapas.map((e) => `<option value="${e}"${n.etapa === e ? ' selected' : ''}>${ROTULO_ETAPA[e]}</option>`).join('')}
+      </select></div>
+      <div id="wrapCall"><label>Call em</label>
+        <input id="ngCall" type="datetime-local" value="${esc((n.call_em || '').slice(0, 16))}"></div>
+      <div id="wrapProx"><label>Retomar em</label>
+        <input id="ngProx" type="date" value="${esc(n.proximo_contato || '')}"></div>
+      <div id="wrapMotivo"><label>Motivo</label><select id="ngMotivo">
+        <option value="">—</option>
+        ${d.motivos.map((m) => `<option${n.motivo === m.nome ? ' selected' : ''}>${esc(m.nome)}</option>`).join('')}
+      </select></div>
+      <div><label>Valor previsto</label>
+        <input id="ngValor" type="number" step="0.01" value="${n.valor_previsto || ''}"></div>
+      <div><label>Moeda</label><select id="ngMoeda">
+        ${MOEDAS.map((m) => `<option${n.moeda === m ? ' selected' : ''}>${m}</option>`).join('')}</select></div>
+    </div>
+    <div style="margin-top:10px"><label>Anotação desta conversa</label>
+      <textarea id="ngNota" placeholder="o que ficou combinado"></textarea></div>`;
+
+  modal(nomeCompleto(n), corpo, `
+    <button class="btn perigo" onclick="excluirNegociacao(${n.id})">Excluir</button>
+    <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
+    <button class="btn" id="ngSalvar">Salvar</button>
+    <button class="btn ouro" id="ngFechar">Fechou a venda</button>`);
+
+  const ajusta = () => {
+    const e = $('#ngEtapa').value;
+    $('#wrapCall').style.display = e === 'call_agendada' ? '' : 'none';
+    $('#wrapProx').style.display = e === 'follow_up' ? '' : 'none';
+    $('#wrapMotivo').style.display = ['perdido', 'saiu'].includes(e) ? '' : 'none';
+  };
+  $('#ngEtapa').onchange = ajusta; ajusta();
+
+  $('#ngSalvar').onclick = async () => {
+    const etapa = $('#ngEtapa').value;
+    if (etapa === 'follow_up' && !$('#ngProx').value)
+      return toast('Informe a data combinada para retomar.');
+    if (['perdido', 'saiu'].includes(etapa) && !$('#ngMotivo').value)
+      return toast('Escolha o motivo.');
+    try {
+      await api('/funil/' + n.id, { method: 'PUT', body: {
+        etapa, call_em: $('#ngCall').value || null, proximo_contato: $('#ngProx').value || null,
+        motivo: $('#ngMotivo').value || null, valor_previsto: $('#ngValor').value,
+        moeda: $('#ngMoeda').value,
+        interacao: $('#ngNota').value.trim()
+          ? { tipo: 'call', obs: $('#ngNota').value.trim(), resultado: etapa } : null,
+      } });
+      fecharModal(); toast('Atualizado');
+      CACHE.pacientes = null;
+      TELA === 'funil' ? telaFunil() : telaHome();
+    } catch (e) { toast(e.message); }
+  };
+
+  $('#ngFechar').onclick = () => fecharVenda(n);
+}
+
+/* ---------- atalho da Home: resultado da call ---------- */
+async function resultadoCall(id) {
+  const tipos = ['novo', 'renovacao'];
+  for (const t of tipos) {
+    const d = await api('/funil?tipo=' + t);
+    if (d.negociacoes.some((x) => x.id === id)) { FUNIL_TIPO = t; break; }
+  }
+  abrirNegociacao(id);
+}
+
+/* ---------- fechar a venda vira contrato ---------- */
+async function fecharVenda(n) {
+  if (!PLANOS.length) PLANOS = (await api('/planos')).planos;
+  const corpo = `
+    <p style="margin:0 0 14px;color:var(--txt-2);font-size:13.5px">
+      Isso cria o contrato de <b>${esc(n.nome)}</b>, gera as parcelas e move para
+      ${n.tipo === 'renovacao' ? 'renovado' : 'cliente ativo'}.</p>
+    <div class="grid g2">
+      <div><label>Plano</label><select id="fvPlano">
+        <option value="">— escolher —</option>
+        ${PLANOS.filter((p) => p.ativo).map((p) => `<option value="${p.id}" data-dias="${p.dias}" data-brl="${p.preco_brl}" data-usd="${p.preco_usd}"${n.plano_id === p.id ? ' selected' : ''}>${esc(p.codigo)} — ${esc(p.nome)}</option>`).join('')}
+      </select></div>
+      <div><label>Forma de pagamento</label><select id="fvForma">
+        ${FORMAS.map((f) => `<option>${f}</option>`).join('')}</select></div>
+      <div><label>Início</label><input id="fvIni" type="date" value="${hojeISO()}"></div>
+      <div><label>Término</label><input id="fvFim" type="date"></div>
+      <div><label>Moeda</label><select id="fvMoeda">
+        ${MOEDAS.map((m) => `<option${n.moeda === m ? ' selected' : ''}>${m}</option>`).join('')}</select></div>
+      <div><label>Valor total</label>
+        <input id="fvValor" type="number" step="0.01" value="${n.valor_previsto || ''}"></div>
+      <div><label>Parcelas</label><input id="fvParc" type="number" min="1" value="1"></div>
+    </div>`;
+
+  modal('Fechar venda', corpo, `
+    <button class="btn ghost" onclick="abrirNegociacao(${n.id})">Voltar</button>
+    <button class="btn ouro" id="fvOk">Criar contrato</button>`);
+
+  const sinc = () => {
+    const op = $('#fvPlano').selectedOptions[0];
+    if (!op || !op.value) return;
+    const ini = $('#fvIni').value || hojeISO();
+    const dd = new Date(ini + 'T12:00:00Z');
+    dd.setUTCDate(dd.getUTCDate() + Number(op.dataset.dias || 30));
+    $('#fvFim').value = dd.toISOString().slice(0, 10);
+    const v = $('#fvMoeda').value === 'USD' ? op.dataset.usd : op.dataset.brl;
+    if (Number(v) > 0 && !$('#fvValor').value) $('#fvValor').value = v;
+  };
+  $('#fvPlano').onchange = sinc; $('#fvIni').onchange = sinc; $('#fvMoeda').onchange = sinc;
+  $('#fvForma').onchange = () => {
+    const m = { pix: 'BRL', asaas: 'BRL', infinity: 'BRL', zelle: 'USD', paypal: 'USD' }[$('#fvForma').value];
+    if (m) { $('#fvMoeda').value = m; sinc(); }
+  };
+  sinc();
+
+  $('#fvOk').onclick = async () => {
+    try {
+      await api(`/funil/${n.id}/fechar`, { method: 'POST', body: {
+        plano_id: $('#fvPlano').value || null, data_inicial: $('#fvIni').value,
+        data_final: $('#fvFim').value, valor_cobrado: $('#fvValor').value,
+        moeda: $('#fvMoeda').value, forma: $('#fvForma').value, qtd_parcelas: $('#fvParc').value,
+      } });
+      fecharModal(); toast('Contrato criado');
+      CACHE.pacientes = null;
+      TELA === 'funil' ? telaFunil() : telaHome();
+    } catch (e) { toast(e.message); }
+  };
+}
+
+async function excluirNegociacao(id) {
+  if (!confirm('Excluir esta negociação? O cadastro da pessoa continua.')) return;
+  await api('/funil/' + id, { method: 'DELETE' });
+  fecharModal(); toast('Excluída'); telaFunil();
+}
+
+/* ---------- relatório de perdas ---------- */
+async function relatorioFunil() {
+  const r = await api('/funil/relatorio');
+  const tot = r.por_motivo.reduce((s, x) => s + x.qtd, 0);
+  const corpo = `
+    <p style="margin:0 0 14px;color:var(--txt-2);font-size:13.5px">
+      Desde ${dataBR(r.de)}.</p>
+    <h3 style="margin-bottom:8px">Por que perde</h3>
+    ${!tot ? '<p class="vazio">Nenhuma perda registrada ainda.</p>' :
+      r.por_motivo.map((m) => `
+        <div style="margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;font-size:13.5px">
+            <b>${esc(m.motivo || 'sem motivo')}</b>
+            <span>${m.qtd} · ${Math.round((m.qtd / tot) * 100)}%</span></div>
+          <div class="barra-peso"><i style="width:${(m.qtd / tot) * 100}%;background:var(--erro)"></i></div>
+          <small style="color:var(--txt-2)">${m.tipo === 'renovacao' ? 'renovação' : 'lead novo'}${m.valor ? ' · ' + money(m.valor, 'BRL') + ' perdidos' : ''}</small>
+        </div>`).join('')}
+
+    <h3 style="margin:20px 0 8px">Conversão</h3>
+    ${!r.conversao.length ? '<p class="vazio">—</p>' : `<table><thead><tr>
+      <th>Tipo</th><th>Ganhou</th><th>Perdeu</th><th>Taxa</th><th>Valor ganho</th></tr></thead><tbody>
+      ${r.conversao.map((c) => {
+        const t = c.ganhou + c.perdeu;
+        return `<tr><td>${c.tipo === 'renovacao' ? 'Renovação' : 'Lead novo'}</td>
+          <td>${c.ganhou}</td><td>${c.perdeu}</td>
+          <td><b>${t ? Math.round((c.ganhou / t) * 100) : 0}%</b></td>
+          <td>${money(c.valor_ganho, 'BRL')}</td></tr>`;
+      }).join('')}</tbody></table>`}
+
+    <h3 style="margin:20px 0 8px">De onde vêm os leads</h3>
+    ${!r.por_origem.length ? '<p class="vazio">—</p>' : `<table><thead><tr>
+      <th>Origem</th><th>Leads</th><th>Fechou</th><th>Taxa</th></tr></thead><tbody>
+      ${r.por_origem.map((o) => `<tr><td>${esc(o.origem || '—')}</td><td>${o.qtd}</td>
+        <td>${o.fechou}</td><td><b>${o.qtd ? Math.round((o.fechou / o.qtd) * 100) : 0}%</b></td></tr>`).join('')}
+      </tbody></table>`}`;
+  modal('Por que perde', corpo);
 }
 
 /* ==========================================================
@@ -671,16 +1086,27 @@ async function telaAgenda() {
     cels.push(`<div class="card" style="padding:8px;min-height:96px;${eHoje ? 'border-color:var(--ouro);border-width:2px' : ''}"
         ondblclick="abrirCompromisso(null,'${dia}')">
       <div style="font-size:12px;font-weight:700;color:${eHoje ? 'var(--ouro)' : 'var(--txt-2)'};margin-bottom:5px">${d}</div>
-      ${evs.map((e) => `<div onclick="abrirCompromisso(${e.id})" style="cursor:pointer;font-size:11.5px;background:${
-        e.tipo === 'consulta' ? '#E6EEF8' : e.tipo === 'cobranca' ? '#FCECE9' : e.tipo === 'followup' ? '#FBF0D6' : '#EDF1F6'
-      };padding:3px 6px;border-radius:5px;margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-        <b>${horaBR(e.inicio)}</b> ${esc(e.titulo)}</div>`).join('')}
+      ${evs.map((e) => {
+        const cor = CORES_COMPROMISSO[e.status] || CORES_COMPROMISSO.marcado;
+        const quem = e.paciente_apelido || e.paciente_nome;
+        return `<div onclick="abrirCompromisso(${e.id})" title="${esc(e.titulo)}${quem ? ' · ' + esc(quem) : ''}"
+          style="cursor:pointer;font-size:11.5px;background:${cor.bg};color:${cor.txt};
+                 border-left:3px solid ${cor.borda};padding:3px 6px;border-radius:5px;margin-bottom:3px;
+                 overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          <b>${horaBR(e.inicio)}</b> ${esc(e.titulo)}${quem ? ` · <b>${esc(quem)}</b>` : ''}</div>`;
+      }).join('')}
     </div>`);
   }
 
   $('#tela').innerHTML = `
     <div class="topo">
-      <div><h1>Agenda</h1><p>Dê dois cliques num dia para criar um compromisso</p></div>
+      <div><h1>Agenda</h1>
+        <p style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+          ${['marcado', 'feito', 'cancelado'].map((s) => `<span style="display:inline-flex;align-items:center;gap:5px">
+            <i style="width:10px;height:10px;border-radius:3px;background:${CORES_COMPROMISSO[s].borda};display:inline-block"></i>
+            ${ROTULO_COMPROMISSO[s]}</span>`).join('')}
+          <span style="color:var(--txt-2)">· dois cliques num dia criam um compromisso</span>
+        </p></div>
       <div class="dir">
         <button class="btn ghost" onclick="MES=new Date(MES.getFullYear(),MES.getMonth()-1,1);telaAgenda()">←</button>
         <b style="align-self:center;min-width:150px;text-align:center;text-transform:capitalize">
@@ -716,7 +1142,7 @@ async function abrirCompromisso(id, dia) {
       <div><label>Data e hora</label><input id="mIni" type="datetime-local" value="${esc((c.inicio || '').slice(0, 16))}"></div>
       <div><label>Local / link</label><input id="mLocal" value="${esc(c.local || '')}"></div>
       <div><label>Situação</label><select id="mSt">
-        ${['marcado', 'feito', 'cancelado'].map((s) => `<option value="${s}"${c.status === s ? ' selected' : ''}>${s}</option>`).join('')}</select></div>
+        ${['marcado', 'feito', 'cancelado'].map((s) => `<option value="${s}"${c.status === s ? ' selected' : ''}>${ROTULO_COMPROMISSO[s]}</option>`).join('')}</select></div>
     </div>
     <div style="margin-top:10px"><label>Observações</label><textarea id="mObs">${esc(c.obs || '')}</textarea></div>`;
 
