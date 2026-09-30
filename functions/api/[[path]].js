@@ -183,10 +183,26 @@ async function mapaFusos(env) {
 }
 const fusoDe = (pac, mapa) => pac.fuso || mapa[pac.pais] || 'America/Sao_Paulo';
 
+// Credencial mora nas variáveis de ambiente do Pages, não no banco: um dump
+// do D1 não vaza a chave. O que estiver no banco só vale se a variável faltar.
 async function waConfig(env) {
   const r = await env.DB.prepare(
     "SELECT key,value FROM settings WHERE key LIKE 'wa_%'").all();
   const o = {}; (r.results || []).forEach((x) => { o[x.key] = x.value; });
+
+  const fonte = {};
+  const daVar = (chave, variavel) => {
+    const v = (env[variavel] || '').trim();
+    if (v) { o[chave] = v; fonte[chave] = variavel; }
+    else if (o[chave]) fonte[chave] = 'banco';
+    else fonte[chave] = 'vazio';
+  };
+  daVar('wa_url', 'EVOLUTION_URL');
+  daVar('wa_apikey', 'EVOLUTION_APIKEY');
+  daVar('wa_instancia', 'EVOLUTION_INSTANCIA');
+  daVar('wa_token_cron', 'CRON_TOKEN');
+  if (o.wa_url) o.wa_url = o.wa_url.replace(/\/+$/, '');
+  o._fonte = fonte;
   return o;
 }
 
@@ -407,14 +423,9 @@ export async function onRequest(context) {
     // ---------- fila do WhatsApp: chamado pelo Worker de cron ----------
     // Não usa sessão: autentica pelo token gerado na tela de WhatsApp.
     if (rota === '/whatsapp/processar' && metodo === 'POST') {
-      const cfgT = await env.DB.prepare(
-        "SELECT value FROM settings WHERE key='wa_token_cron'").first();
+      const c = await waConfig(env);
       const token = (request.headers.get('x-cron-token') || body.token || '').trim();
-      if (!cfgT || !cfgT.value || token !== cfgT.value) return bad('Token inválido.', 401);
-
-      const cfg = await env.DB.prepare(
-        "SELECT key,value FROM settings WHERE key IN ('wa_url','wa_apikey','wa_instancia','wa_ativo','wa_janela_ini','wa_janela_fim')").all();
-      const c = {}; (cfg.results || []).forEach((x) => { c[x.key] = x.value; });
+      if (!c.wa_token_cron || token !== c.wa_token_cron) return bad('Token inválido.', 401);
       if (c.wa_ativo !== '1') return json({ ok: true, enviadas: 0, motivo: 'automações desligadas' });
       if (!c.wa_url || !c.wa_apikey || !c.wa_instancia)
         return json({ ok: true, enviadas: 0, motivo: 'WhatsApp não configurado' });
@@ -1422,6 +1433,9 @@ export async function onRequest(context) {
         janela_ini: c.wa_janela_ini || '08:00', janela_fim: c.wa_janela_fim || '20:00',
         tem_token_cron: !!c.wa_token_cron, token_cron: c.wa_token_cron || '',
         fusos_pais: fusos,
+        fonte: c._fonte,
+        nomes_variaveis: { wa_url: 'EVOLUTION_URL', wa_apikey: 'EVOLUTION_APIKEY',
+          wa_instancia: 'EVOLUTION_INSTANCIA', wa_token_cron: 'CRON_TOKEN' },
       });
     }
 
@@ -1430,15 +1444,20 @@ export async function onRequest(context) {
       const atual = await waConfig(env);
       const put = async (k, v) => env.DB.prepare(
         'INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)').bind(k, String(v ?? '')).run();
-      await put('wa_url', (b.url || '').trim().replace(/\/+$/, ''));
-      await put('wa_instancia', (b.instancia || '').trim());
+      // o que vem de variável de ambiente não é gravado no banco
+      const daVar = (k) => atual._fonte && atual._fonte[k] && atual._fonte[k] !== 'banco'
+        && atual._fonte[k] !== 'vazio';
+      if (!daVar('wa_url')) await put('wa_url', (b.url || '').trim().replace(/\/+$/, ''));
+      if (!daVar('wa_instancia')) await put('wa_instancia', (b.instancia || '').trim());
       // chave mascarada ou vazia não sobrescreve a guardada
-      if (b.apikey && !b.apikey.startsWith('••••')) await put('wa_apikey', b.apikey.trim());
+      if (!daVar('wa_apikey') && b.apikey && !b.apikey.startsWith('••••'))
+        await put('wa_apikey', b.apikey.trim());
       await put('wa_ativo', b.ativo ? '1' : '0');
       await put('wa_janela_ini', b.janela_ini || '08:00');
       await put('wa_janela_fim', b.janela_fim || '20:00');
       if (b.fusos_pais != null) await put('fusos_pais', b.fusos_pais);
-      if (!atual.wa_token_cron) await put('wa_token_cron', crypto.randomUUID().replace(/-/g, ''));
+      if (!daVar('wa_token_cron') && !atual.wa_token_cron)
+        await put('wa_token_cron', crypto.randomUUID().replace(/-/g, ''));
       return json({ ok: true });
     }
 
