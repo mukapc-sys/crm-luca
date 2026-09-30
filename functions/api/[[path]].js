@@ -58,6 +58,8 @@ const num = (v) => {
   const n = Number(String(v).replace(/[^\d.,-]/g, '').replace(/\.(?=\d{3}\b)/g, '').replace(',', '.'));
   return isNaN(n) ? 0 : n;
 };
+const SIMBOLO = { BRL: 'R$', USD: 'US$', GBP: '£', EUR: '€' };
+const dataBR = (d) => (!d ? '' : String(d).slice(0, 10).split('-').reverse().join('/'));
 const MOEDA_POR_FORMA = { pix: 'BRL', asaas: 'BRL', infinity: 'BRL', zelle: 'USD', paypal: 'USD' };
 
 // ---------- cotação ----------
@@ -143,6 +145,217 @@ async function gerarParcelas(env, contrato) {
 }
 
 // ============================================================
+// WHATSAPP — Evolution API
+// ============================================================
+// Converte "hora local naquele fuso" no instante UTC correspondente.
+// Usa o próprio Intl para respeitar horário de verão de cada país.
+function offsetMin(fuso, quando) {
+  try {
+    const f = new Intl.DateTimeFormat('en-US', {
+      timeZone: fuso, hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    const p = {};
+    for (const x of f.formatToParts(quando)) p[x.type] = x.value;
+    const comoUtc = Date.UTC(+p.year, +p.month - 1, +p.day,
+      +p.hour % 24, +p.minute, +p.second);
+    return (comoUtc - Math.floor(quando.getTime() / 1000) * 1000) / 60000;
+  } catch { return 0; }
+}
+
+function localParaUtc(dia, hora, fuso) {
+  const [hh, mm] = String(hora || '09:00').split(':').map(Number);
+  const palpite = new Date(`${dia}T${String(hh).padStart(2, '0')}:${String(mm || 0).padStart(2, '0')}:00Z`);
+  let off = offsetMin(fuso, palpite);
+  let r = new Date(palpite.getTime() - off * 60000);
+  // uma segunda passada resolve a virada de horário de verão
+  const off2 = offsetMin(fuso, r);
+  if (off2 !== off) r = new Date(palpite.getTime() - off2 * 60000);
+  return r.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+async function mapaFusos(env) {
+  const v = (await env.DB.prepare("SELECT value FROM settings WHERE key='fusos_pais'").first())?.value || '';
+  const o = {};
+  v.split('|').forEach((p) => { const [k, f] = p.split(':'); if (k && f) o[k.trim()] = f.trim(); });
+  return o;
+}
+const fusoDe = (pac, mapa) => pac.fuso || mapa[pac.pais] || 'America/Sao_Paulo';
+
+async function waConfig(env) {
+  const r = await env.DB.prepare(
+    "SELECT key,value FROM settings WHERE key LIKE 'wa_%'").all();
+  const o = {}; (r.results || []).forEach((x) => { o[x.key] = x.value; });
+  return o;
+}
+
+const soDigitos = (t) => String(t || '').replace(/\D/g, '');
+
+// Preenche as variáveis do modelo com o que o CRM já sabe
+function montarTexto(corpo, ctx) {
+  const v = {
+    nome: ctx.nome || '',
+    primeiro_nome: (ctx.nome || '').trim().split(/\s+/)[0] || '',
+    apelido: ctx.apelido || '',
+    cod: ctx.cod || '',
+    plano: ctx.plano || '',
+    valor: ctx.valor || '',
+    parcela: ctx.parcela || '',
+    vencimento: ctx.vencimento || '',
+    data_call: ctx.data_call || '',
+    hora_call: ctx.hora_call || '',
+    data_fim: ctx.data_fim || '',
+    dias: ctx.dias != null ? String(ctx.dias) : '',
+  };
+  return String(corpo || '').replace(/\{(\w+)\}/g, (m, k) => (k in v ? v[k] : m));
+}
+
+async function enviarWhats(env, telefone, mensagem) {
+  const c = await waConfig(env);
+  if (!c.wa_url || !c.wa_apikey || !c.wa_instancia)
+    return { ok: false, erro: 'WhatsApp não configurado.' };
+  const base = c.wa_url.replace(/\/+$/, '');
+  try {
+    const r = await fetch(`${base}/message/sendText/${encodeURIComponent(c.wa_instancia)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', apikey: c.wa_apikey },
+      body: JSON.stringify({ number: soDigitos(telefone), text: mensagem }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) return { ok: false, erro: j.message || j.error || `HTTP ${r.status}` };
+    return { ok: true, resposta: j };
+  } catch (e) {
+    return { ok: false, erro: String(e && e.message || e) };
+  }
+}
+
+// ---------- monta a fila do que está por vir ----------
+async function agendarAutomaticas(env) {
+  const cfg = await waConfig(env);
+  if (cfg.wa_ativo !== '1') return { criadas: 0, motivo: 'automações desligadas' };
+  const mapa = await mapaFusos(env);
+  const ts = await env.DB.prepare("SELECT * FROM wa_templates WHERE ativo=1 AND modo='auto'").all();
+  const porEvento = {};
+  (ts.results || []).forEach((t) => { porEvento[t.evento] = t; });
+  const h = hoje();
+  const agoraUtc = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  let criadas = 0;
+
+  const janIni = cfg.wa_janela_ini || '08:00';
+  const janFim = cfg.wa_janela_fim || '20:00';
+
+  // Respeita a janela de horário do paciente e não dispara mensagem velha:
+  // atrasou até 3h, sai no próximo ciclo; mais que isso, o evento perdeu a hora.
+  const ajustarHorario = (quandoUtc, fuso, dia) => {
+    const iniUtc = localParaUtc(dia, janIni, fuso);
+    const fimUtc = localParaUtc(dia, janFim, fuso);
+    let q = quandoUtc;
+    if (q < iniUtc) q = iniUtc;
+    if (q > fimUtc) return null;
+    if (q < agoraUtc) {
+      const atrasoH = (new Date(agoraUtc.replace(' ', 'T') + 'Z') - new Date(q.replace(' ', 'T') + 'Z')) / 3600000;
+      if (atrasoH > 3) return null;
+      q = agoraUtc;
+    }
+    return q;
+  };
+
+  const enfileirar = async (chaveUnica, pac, tpl, quandoUtc, texto, refTipo, refId) => {
+    if (!pac || !pac.telefone || !quandoUtc) return;
+    try {
+      await env.DB.prepare(
+        `INSERT INTO wa_fila (chave_unica,paciente_id,template_chave,telefone,mensagem,
+             agendado_para,status,modo,ref_tipo,ref_id)
+         VALUES (?,?,?,?,?,?, 'agendado','auto',?,?)`
+      ).bind(chaveUnica, pac.id, tpl.chave, pac.telefone, texto, quandoUtc, refTipo, refId).run();
+      criadas++;
+    } catch { /* chave_unica repetida: já estava na fila */ }
+  };
+
+  // 1) lembrete de call
+  if (porEvento.call) {
+    const t = porEvento.call;
+    const alvo = await env.DB.prepare(
+      `SELECT n.id, n.call_em, pa.* FROM negociacoes n JOIN pacientes pa ON pa.id=n.paciente_id
+        WHERE n.etapa='call_agendada' AND substr(n.call_em,1,10) BETWEEN ? AND ?`)
+      .bind(h, addDias(h, 3)).all();
+    for (const x of (alvo.results || [])) {
+      const quando = new Date(new Date(x.call_em + ':00Z').getTime() - t.antecedencia_h * 3600000);
+      let utc = quando.toISOString().slice(0, 19).replace('T', ' ');
+      if (utc < agoraUtc) utc = null;
+      const texto = montarTexto(t.corpo, { ...x,
+        data_call: dataBR(x.call_em), hora_call: (x.call_em || '').slice(11, 16) });
+      await enfileirar(`call:${x.id}`, x, t, utc, texto, 'negociacao', x.id);
+    }
+  }
+
+  // 2) parcelas: antes, no dia e em atraso
+  const eventosParcela = [
+    ['parcela_previa', (t) => addDias(h, Math.round(t.antecedencia_h / 24))],
+    ['parcela_hoje', () => h],
+    ['parcela_atraso', (t) => addDias(h, -Math.round(t.antecedencia_h / 24))],
+  ];
+  for (const [ev, calcVenc] of eventosParcela) {
+    const t = porEvento[ev];
+    if (!t) continue;
+    const venc = calcVenc(t);
+    const alvo = await env.DB.prepare(
+      `SELECT p.id, p.numero, p.total, p.valor, p.pago, p.moeda, p.vencimento,
+              c.codigo_plano, pa.*
+         FROM parcelas p
+         JOIN contratos c ON c.id=p.contrato_id
+         JOIN pacientes pa ON pa.id=p.paciente_id
+        WHERE p.status IN ('aberta','parcial') AND p.vencimento=?
+          AND c.status='ativo' AND pa.status NOT IN ('encerrado','parceria')`).bind(venc).all();
+    for (const x of (alvo.results || [])) {
+      const fu = fusoDe(x, mapa);
+      const utc = ajustarHorario(localParaUtc(h, t.hora_envio || '09:00', fu), fu, h);
+      const texto = montarTexto(t.corpo, { ...x,
+        parcela: `${x.numero}/${x.total}`,
+        valor: (SIMBOLO[x.moeda] || x.moeda) + ' ' + Number(x.valor - x.pago).toFixed(2),
+        vencimento: dataBR(x.vencimento), plano: x.codigo_plano });
+      await enfileirar(`${ev}:${x.id}`, x, t, utc, texto, 'parcela', x.id);
+    }
+  }
+
+  // 3) renovação
+  if (porEvento.renovacao) {
+    const t = porEvento.renovacao;
+    const diasAntes = Math.round(t.antecedencia_h / 24);
+    const alvo = await env.DB.prepare(
+      `SELECT c.id, c.data_final, c.codigo_plano, pa.*
+         FROM contratos c JOIN pacientes pa ON pa.id=c.paciente_id
+        WHERE c.status='ativo' AND c.data_final=?
+          AND pa.status NOT IN ('encerrado','parceria')`).bind(addDias(h, diasAntes)).all();
+    for (const x of (alvo.results || [])) {
+      const fu = fusoDe(x, mapa);
+      const utc = ajustarHorario(localParaUtc(h, t.hora_envio || '10:00', fu), fu, h);
+      const texto = montarTexto(t.corpo, { ...x,
+        plano: x.codigo_plano, data_fim: dataBR(x.data_final), dias: diasAntes });
+      await enfileirar(`renov:${x.id}:${h}`, x, t, utc, texto, 'contrato', x.id);
+    }
+  }
+
+  // 4) check-in diário de quem está ativo
+  if (porEvento.checkin) {
+    const t = porEvento.checkin;
+    const alvo = await env.DB.prepare(
+      `SELECT DISTINCT pa.* FROM pacientes pa
+         JOIN contratos c ON c.paciente_id=pa.id AND c.status='ativo'
+        WHERE pa.status='ativo' AND pa.telefone IS NOT NULL AND pa.telefone<>''`).all();
+    for (const x of (alvo.results || [])) {
+      const fu = fusoDe(x, mapa);
+      const utc = ajustarHorario(localParaUtc(h, t.hora_envio || '08:00', fu), fu, h);
+      await enfileirar(`checkin:${x.id}:${h}`, x, t, utc,
+        montarTexto(t.corpo, x), 'paciente', x.id);
+    }
+  }
+
+  return { criadas };
+}
+
+// ============================================================
 // ROTEADOR
 // ============================================================
 export async function onRequest(context) {
@@ -189,6 +402,53 @@ export async function onRequest(context) {
       await env.DB.prepare('INSERT INTO sessoes (token,usuario_id,expira_em) VALUES (?,?,?)')
         .bind(token, u.id, expira).run();
       return json({ token, usuario: { id: u.id, nome: u.nome, email: u.email, papel: u.papel } });
+    }
+
+    // ---------- fila do WhatsApp: chamado pelo Worker de cron ----------
+    // Não usa sessão: autentica pelo token gerado na tela de WhatsApp.
+    if (rota === '/whatsapp/processar' && metodo === 'POST') {
+      const cfgT = await env.DB.prepare(
+        "SELECT value FROM settings WHERE key='wa_token_cron'").first();
+      const token = (request.headers.get('x-cron-token') || body.token || '').trim();
+      if (!cfgT || !cfgT.value || token !== cfgT.value) return bad('Token inválido.', 401);
+
+      const cfg = await env.DB.prepare(
+        "SELECT key,value FROM settings WHERE key IN ('wa_url','wa_apikey','wa_instancia','wa_ativo','wa_janela_ini','wa_janela_fim')").all();
+      const c = {}; (cfg.results || []).forEach((x) => { c[x.key] = x.value; });
+      if (c.wa_ativo !== '1') return json({ ok: true, enviadas: 0, motivo: 'automações desligadas' });
+      if (!c.wa_url || !c.wa_apikey || !c.wa_instancia)
+        return json({ ok: true, enviadas: 0, motivo: 'WhatsApp não configurado' });
+
+      // monta a fila do que precisa sair e só depois envia o que já venceu
+      const agendou = await agendarAutomaticas(env);
+
+      const agora = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      const pend = await env.DB.prepare(
+        `SELECT * FROM wa_fila WHERE status='agendado' AND agendado_para <= ?
+          ORDER BY agendado_para ASC LIMIT 40`).bind(agora).all();
+
+      const base = c.wa_url.replace(/\/+$/, '');
+      let enviadas = 0, falhas = 0;
+      for (const m of (pend.results || [])) {
+        let ok = false, erro = null;
+        try {
+          const r = await fetch(`${base}/message/sendText/${encodeURIComponent(c.wa_instancia)}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', apikey: c.wa_apikey },
+            body: JSON.stringify({ number: String(m.telefone).replace(/\D/g, ''), text: m.mensagem }),
+          });
+          const j = await r.json().catch(() => ({}));
+          ok = r.ok;
+          if (!ok) erro = j.message || j.error || `HTTP ${r.status}`;
+        } catch (e) { erro = String(e && e.message || e); }
+        await env.DB.prepare(
+          'UPDATE wa_fila SET status=?, erro=?, enviado_em=? WHERE id=?')
+          .bind(ok ? 'enviado' : 'erro', erro,
+            ok ? new Date().toISOString().slice(0, 19).replace('T', ' ') : null, m.id).run();
+        ok ? enviadas++ : falhas++;
+      }
+      return json({ ok: true, agendadas: agendou.criadas || 0, enviadas, falhas,
+        pendentes: (pend.results || []).length });
     }
 
     // ---------- daqui pra baixo exige login ----------
@@ -1144,6 +1404,184 @@ export async function onRequest(context) {
         await env.DB.prepare('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)')
           .bind(k, String(v)).run();
       }
+      return json({ ok: true });
+    }
+
+    // ==========================================================
+    // WHATSAPP — Evolution API
+    // ==========================================================
+
+    if (rota === '/whatsapp/config' && metodo === 'GET') {
+      const c = await waConfig(env);
+      const fusos = (await env.DB.prepare("SELECT value FROM settings WHERE key='fusos_pais'").first())?.value || '';
+      return json({
+        url: c.wa_url || '', instancia: c.wa_instancia || '',
+        tem_apikey: !!c.wa_apikey,
+        apikey_dica: c.wa_apikey ? '••••' + c.wa_apikey.slice(-4) : '',
+        ativo: c.wa_ativo === '1',
+        janela_ini: c.wa_janela_ini || '08:00', janela_fim: c.wa_janela_fim || '20:00',
+        tem_token_cron: !!c.wa_token_cron, token_cron: c.wa_token_cron || '',
+        fusos_pais: fusos,
+      });
+    }
+
+    if (rota === '/whatsapp/config' && metodo === 'PUT') {
+      const b = body;
+      const atual = await waConfig(env);
+      const put = async (k, v) => env.DB.prepare(
+        'INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)').bind(k, String(v ?? '')).run();
+      await put('wa_url', (b.url || '').trim().replace(/\/+$/, ''));
+      await put('wa_instancia', (b.instancia || '').trim());
+      // chave mascarada ou vazia não sobrescreve a guardada
+      if (b.apikey && !b.apikey.startsWith('••••')) await put('wa_apikey', b.apikey.trim());
+      await put('wa_ativo', b.ativo ? '1' : '0');
+      await put('wa_janela_ini', b.janela_ini || '08:00');
+      await put('wa_janela_fim', b.janela_fim || '20:00');
+      if (b.fusos_pais != null) await put('fusos_pais', b.fusos_pais);
+      if (!atual.wa_token_cron) await put('wa_token_cron', crypto.randomUUID().replace(/-/g, ''));
+      return json({ ok: true });
+    }
+
+    if (rota === '/whatsapp/status' && metodo === 'GET') {
+      const c = await waConfig(env);
+      if (!c.wa_url || !c.wa_apikey || !c.wa_instancia)
+        return json({ configurado: false, estado: 'sem configuração' });
+      try {
+        const r = await fetch(
+          `${c.wa_url.replace(/\/+$/, '')}/instance/connectionState/${encodeURIComponent(c.wa_instancia)}`,
+          { headers: { apikey: c.wa_apikey } });
+        const j = await r.json().catch(() => ({}));
+        const estado = j?.instance?.state || j?.state || (r.ok ? 'desconhecido' : `HTTP ${r.status}`);
+        return json({ configurado: true, conectado: estado === 'open', estado, bruto: j });
+      } catch (e) {
+        return json({ configurado: true, conectado: false, estado: 'sem resposta do servidor',
+          erro: String(e && e.message || e) });
+      }
+    }
+
+    if (rota === '/whatsapp/conectar' && metodo === 'POST') {
+      const c = await waConfig(env);
+      if (!c.wa_url || !c.wa_apikey || !c.wa_instancia) return bad('Configure a Evolution primeiro.');
+      try {
+        const r = await fetch(
+          `${c.wa_url.replace(/\/+$/, '')}/instance/connect/${encodeURIComponent(c.wa_instancia)}`,
+          { headers: { apikey: c.wa_apikey } });
+        const j = await r.json().catch(() => ({}));
+        return json({ ok: r.ok, qr: j?.base64 || j?.qrcode?.base64 || null,
+          codigo: j?.code || j?.qrcode?.code || null, bruto: j });
+      } catch (e) { return bad('Não consegui falar com a Evolution: ' + String(e && e.message || e), 502); }
+    }
+
+    // ---------- modelos ----------
+    if (rota === '/whatsapp/templates' && metodo === 'GET') {
+      const r = await env.DB.prepare('SELECT * FROM wa_templates ORDER BY posicao, nome').all();
+      return json({ templates: r.results || [] });
+    }
+    if (rota === '/whatsapp/templates' && metodo === 'POST') {
+      const b = body;
+      if (!b.chave || !b.nome || !b.corpo) return bad('Chave, nome e corpo são obrigatórios.');
+      await env.DB.prepare(
+        `INSERT INTO wa_templates (chave,nome,modo,evento,corpo,antecedencia_h,hora_envio,ativo,posicao)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      ).bind(b.chave.trim(), b.nome.trim(), b.modo || 'semi', b.evento || null, b.corpo,
+        Number(b.antecedencia_h || 0), b.hora_envio || '', b.ativo === 0 ? 0 : 1,
+        Number(b.posicao || 50)).run();
+      return json({ ok: true });
+    }
+    if (rota.startsWith('/whatsapp/templates/') && metodo === 'PUT') {
+      const b = body;
+      await env.DB.prepare(
+        `UPDATE wa_templates SET nome=?,modo=?,evento=?,corpo=?,antecedencia_h=?,hora_envio=?,ativo=?,posicao=?
+         WHERE id=?`
+      ).bind(b.nome, b.modo || 'semi', b.evento || null, b.corpo, Number(b.antecedencia_h || 0),
+        b.hora_envio || '', b.ativo === 0 ? 0 : 1, Number(b.posicao || 50), seg[2]).run();
+      return json({ ok: true });
+    }
+    if (rota.startsWith('/whatsapp/templates/') && metodo === 'DELETE') {
+      await env.DB.prepare('DELETE FROM wa_templates WHERE id=?').bind(seg[2]).run();
+      return json({ ok: true });
+    }
+
+    // ---------- envio com um clique ----------
+    if (rota === '/whatsapp/enviar' && metodo === 'POST') {
+      const b = body;
+      let texto = b.mensagem;
+      let pac = null;
+      if (b.paciente_id) pac = await env.DB.prepare('SELECT * FROM pacientes WHERE id=?')
+        .bind(b.paciente_id).first();
+      if (!texto && b.template_chave) {
+        const t = await env.DB.prepare('SELECT * FROM wa_templates WHERE chave=?')
+          .bind(b.template_chave).first();
+        if (!t) return bad('Modelo não encontrado.');
+        texto = montarTexto(t.corpo, { ...(pac || {}), ...(b.ctx || {}) });
+      }
+      const tel = b.telefone || (pac && pac.telefone);
+      if (!tel) return bad('Paciente sem telefone cadastrado.');
+      if (!texto) return bad('Mensagem vazia.');
+
+      const r = await enviarWhats(env, tel, texto);
+      await env.DB.prepare(
+        `INSERT INTO wa_fila (paciente_id,template_chave,telefone,mensagem,agendado_para,status,modo,
+             ref_tipo,ref_id,erro,enviado_em)
+         VALUES (?,?,?,?,?,?,'semi',?,?,?,?)`
+      ).bind(b.paciente_id || null, b.template_chave || null, tel, texto,
+        new Date().toISOString().slice(0, 19).replace('T', ' '),
+        r.ok ? 'enviado' : 'erro', b.ref_tipo || null, b.ref_id || null,
+        r.ok ? null : r.erro, r.ok ? new Date().toISOString().slice(0, 19).replace('T', ' ') : null).run();
+
+      if (!r.ok) return bad(r.erro, 502);
+      return json({ ok: true, mensagem: texto });
+    }
+
+    // ---------- prévia do texto já com as variáveis ----------
+    if (rota === '/whatsapp/previa' && metodo === 'POST') {
+      const b = body;
+      const t = await env.DB.prepare('SELECT * FROM wa_templates WHERE chave=?')
+        .bind(b.template_chave).first();
+      if (!t) return bad('Modelo não encontrado.');
+      const pac = b.paciente_id
+        ? await env.DB.prepare('SELECT * FROM pacientes WHERE id=?').bind(b.paciente_id).first() : {};
+      return json({ mensagem: montarTexto(t.corpo, { ...(pac || {}), ...(b.ctx || {}) }), template: t });
+    }
+
+    if (rota === '/whatsapp/agendar' && metodo === 'POST') {
+      return json({ ok: true, ...(await agendarAutomaticas(env)) });
+    }
+
+    if (rota === '/whatsapp/fila' && metodo === 'GET') {
+      const st = url.searchParams.get('status') || 'agendado';
+      const r = await env.DB.prepare(
+        `SELECT f.*, pa.nome, pa.apelido, pa.cod, pa.pais
+           FROM wa_fila f LEFT JOIN pacientes pa ON pa.id=f.paciente_id
+          WHERE (? = 'todos' OR f.status = ?)
+          ORDER BY CASE WHEN f.status='agendado' THEN f.agendado_para END ASC,
+                   f.id DESC LIMIT 300`).bind(st, st).all();
+      const cont = await env.DB.prepare(
+        'SELECT status, COUNT(*) c FROM wa_fila GROUP BY status').all();
+      return json({ fila: r.results || [], contagem: cont.results || [] });
+    }
+
+    if (rota.startsWith('/whatsapp/fila/') && seg.length === 3 && metodo === 'PUT') {
+      const b = body;
+      await env.DB.prepare(
+        'UPDATE wa_fila SET mensagem=COALESCE(?,mensagem), agendado_para=COALESCE(?,agendado_para), status=COALESCE(?,status) WHERE id=?')
+        .bind(b.mensagem ?? null, b.agendado_para ?? null, b.status ?? null, seg[2]).run();
+      return json({ ok: true });
+    }
+    if (rota.startsWith('/whatsapp/fila/') && seg.length === 3 && metodo === 'DELETE') {
+      await env.DB.prepare("UPDATE wa_fila SET status='cancelado' WHERE id=? AND status='agendado'")
+        .bind(seg[2]).run();
+      return json({ ok: true });
+    }
+    if (rota.startsWith('/whatsapp/fila/') && seg.length === 4 && seg[3] === 'enviar' && metodo === 'POST') {
+      const f = await env.DB.prepare('SELECT * FROM wa_fila WHERE id=?').bind(seg[2]).first();
+      if (!f) return bad('Item não encontrado.', 404);
+      const r = await enviarWhats(env, f.telefone, f.mensagem);
+      await env.DB.prepare(
+        "UPDATE wa_fila SET status=?, erro=?, enviado_em=? WHERE id=?")
+        .bind(r.ok ? 'enviado' : 'erro', r.ok ? null : r.erro,
+          r.ok ? new Date().toISOString().slice(0, 19).replace('T', ' ') : null, f.id).run();
+      if (!r.ok) return bad(r.erro, 502);
       return json({ ok: true });
     }
 

@@ -116,7 +116,8 @@ function irPara(t) {
   TELA = t;
   $$('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tela === t));
   ({ home: telaHome, funil: telaFunil, pacientes: telaPacientes, agenda: telaAgenda,
-     financeiro: telaFinanceiro, planos: telaPlanos, config: telaConfig }[t])();
+     financeiro: telaFinanceiro, whatsapp: telaWhatsapp, planos: telaPlanos,
+     config: telaConfig }[t])();
 }
 
 /* ==========================================================
@@ -160,7 +161,7 @@ async function telaHome() {
         ${c.dias < 0 ? 'atrasada' : c.dias === 0 ? horaBR(c.call_em) || 'hoje' : dataBR(c.call_em)}</span>
       <div class="txt"><b>${nomeCompleto(c)}</b>
         <small>${esc(c.origem || 'Direct')}${c.objetivo ? ' · ' + esc(c.objetivo) : ''}${c.valor_previsto ? ' · ' + money(c.valor_previsto, c.moeda) : ''}</small></div>
-      <button class="btn zap mini" onclick="zap('${esc(c.telefone || '')}','Oi ${prim(c.nome)}! Tudo certo pra nossa call?')">WhatsApp</button>
+      <button class="btn zap mini" onclick="waEnviar(${c.paciente_id},'followup_venda',{data_call:'${dataBR(c.call_em)}',hora_call:'${horaBR(c.call_em)}'},telaHome)">WhatsApp</button>
       <button class="btn mini" onclick="resultadoCall(${c.id})">Resultado</button>
     </div>`;
 
@@ -169,7 +170,7 @@ async function telaHome() {
       <span class="tag ${f.dias < 0 ? 'atrasada' : 'hoje'}">${f.dias < 0 ? Math.abs(f.dias) + 'd atraso' : 'hoje'}</span>
       <div class="txt"><b>${nomeCompleto(f)}</b>
         <small>${f.tipo === 'renovacao' ? 'Renovação' : 'Não fechou na call'}${f.motivo ? ' · ' + esc(f.motivo) : ''}${f.obs ? ' · ' + esc(f.obs.slice(0, 50)) : ''}</small></div>
-      <button class="btn zap mini" onclick="zap('${esc(f.telefone || '')}','Oi ${prim(f.nome)}! Como combinamos, estou passando pra retomar nossa conversa.')">WhatsApp</button>
+      <button class="btn zap mini" onclick="waEnviar(${f.paciente_id},'followup_venda',{},telaHome)">WhatsApp</button>
       <button class="btn mini" onclick="resultadoCall(${f.id})">Resultado</button>
     </div>`;
 
@@ -178,7 +179,7 @@ async function telaHome() {
       <span class="tag ${c.situacao}">${c.situacao === 'atrasada' ? Math.abs(c.dias) + 'd atraso' : c.situacao === 'hoje' ? 'hoje' : 'em ' + c.dias + 'd'}</span>
       <div class="txt"><b>${nomeCompleto(c)}</b>
         <small>Parcela ${c.numero}/${c.total} · ${money(c.valor - c.pago, c.moeda)} · vence ${dataBR(c.vencimento)}</small></div>
-      <button class="btn zap mini" onclick="zap('${esc(c.telefone || '')}','Oi ${prim(c.nome)}! Passando pra lembrar da parcela ${c.numero}/${c.total} (${money(c.valor - c.pago, c.moeda)}), vencimento ${dataBR(c.vencimento)}.')">WhatsApp</button>
+      <button class="btn zap mini" onclick="waEnviar(${c.paciente_id},'cobranca_manual',{parcela:'${c.numero}/${c.total}',valor:'${money(c.valor - c.pago, c.moeda)}',vencimento:'${dataBR(c.vencimento)}',ref:{ref_tipo:'parcela',ref_id:${c.id}}},telaHome)">WhatsApp</button>
       <button class="btn mini" onclick="abrirPagamento(${c.paciente_id},${c.id},${c.valor - c.pago},'${c.moeda}')">Receber</button>
     </div>`;
 
@@ -187,7 +188,7 @@ async function telaHome() {
       <span class="tag ${r.dias != null && r.dias <= 7 ? 'atrasada' : 'hoje'}">${r.dias != null ? r.dias + 'd' : '—'}</span>
       <div class="txt"><b>${nomeCompleto(r)}</b>
         <small>${esc(r.codigo_plano || 'Plano')} termina ${dataBR(r.data_final)} · ${ROTULO_ETAPA[r.etapa] || r.etapa}</small></div>
-      <button class="btn zap mini" onclick="zap('${esc(r.telefone || '')}','Oi ${prim(r.nome)}! Seu plano termina ${dataBR(r.data_final)}. Vamos falar da renovação?')">WhatsApp</button>
+      <button class="btn zap mini" onclick="waEnviar(${r.paciente_id},'followup_venda',{plano:'${esc(r.codigo_plano || '')}',data_fim:'${dataBR(r.data_final)}'},telaHome)">WhatsApp</button>
       <button class="btn mini" onclick="resultadoCall(${r.id})">Resultado</button>
     </div>`;
 
@@ -436,7 +437,8 @@ async function abrirNegociacao(id) {
         ${n.valor_previsto ? `<b>${money(n.valor_previsto, n.moeda)}</b>` : ''}
         ${n.origem ? `<span class="tag">${esc(n.origem)}</span>` : ''}
         ${n.telefone ? `<button class="btn zap mini" style="margin-left:auto"
-          onclick="zap('${esc(n.telefone)}')">WhatsApp</button>` : ''}
+          onclick="waEnviar(${n.paciente_id},'followup_venda',{plano:'${esc(n.plano_anterior || '')}',
+            data_fim:'${dataBR(n.data_final)}'})">WhatsApp</button>` : ''}
       </div>
       ${n.objetivo ? `<div style="margin-top:8px"><label>Objetivo</label><div>${esc(n.objetivo)}</div></div>` : ''}
       ${n.data_final ? `<div style="margin-top:8px"><label>Plano atual</label>
@@ -762,7 +764,7 @@ async function abrirPaciente(id) {
         <button class="btn ouro" onclick="abrirCalculadora(${p.id})">Calcular metabolismo</button>
         <button class="btn ghost" onclick="formPaciente(${p.id})">Editar cadastro</button>
         <button class="btn ghost" onclick="abrirContrato(${p.id})">+ Contrato</button>
-        <button class="btn zap" onclick="zap('${esc(p.telefone || '')}')">WhatsApp</button>
+        <button class="btn zap" onclick="waEnviar(${p.id})">WhatsApp</button>
       </div>
     </div>
 
@@ -1690,6 +1692,372 @@ async function excluirPlano(id) {
   if (!confirm('Excluir este plano? Contratos já criados não são afetados.')) return;
   await api('/planos/' + id, { method: 'DELETE' });
   fecharModal(); toast('Plano excluído'); telaPlanos();
+}
+
+/* ==========================================================
+   WHATSAPP — conexão, modelos, fila e histórico
+   ========================================================== */
+let WA_ABA = 'fila';
+const WA_EVENTOS = [
+  ['', 'Nenhum (só com clique)'],
+  ['call', 'Antes da call agendada'],
+  ['parcela_previa', 'Parcela — dias antes do vencimento'],
+  ['parcela_hoje', 'Parcela — no dia do vencimento'],
+  ['parcela_atraso', 'Parcela — dias depois de vencer'],
+  ['renovacao', 'Plano terminando'],
+  ['checkin', 'Check-in diário dos ativos'],
+];
+const WA_VARS = ['primeiro_nome', 'nome', 'apelido', 'cod', 'plano', 'valor',
+  'parcela', 'vencimento', 'data_call', 'hora_call', 'data_fim', 'dias'];
+
+const dataHora = (s) => !s ? '—'
+  : `${String(s).slice(8, 10)}/${String(s).slice(5, 7)} ${String(s).slice(11, 16)}`;
+
+async function telaWhatsapp() {
+  $('#tela').innerHTML = '<p class="vazio">Carregando…</p>';
+  const [cfg, st, tpl, fila] = await Promise.all([
+    api('/whatsapp/config'), api('/whatsapp/status').catch(() => ({ estado: 'sem resposta' })),
+    api('/whatsapp/templates'), api('/whatsapp/fila?status=agendado'),
+  ]);
+  CACHE.waTemplates = tpl.templates;
+
+  const cont = {}; (fila.contagem || []).forEach((c) => { cont[c.status] = c.c; });
+  const bd = $('#bdWa');
+  if (cont.erro) { bd.textContent = cont.erro; bd.classList.remove('hide'); } else bd.classList.add('hide');
+
+  const conectado = st.conectado;
+  const corEstado = conectado ? 'ativo' : st.configurado ? 'devendo' : '';
+
+  $('#tela').innerHTML = `
+    <div class="topo">
+      <div><h1>WhatsApp</h1><p>Mensagens automáticas e de um clique pela sua Evolution API</p></div>
+      <div class="dir">
+        <span class="tag ${corEstado}" style="align-self:center;padding:7px 12px">
+          ${conectado ? 'Conectado' : esc(st.estado || 'desconectado')}</span>
+        <button class="btn ghost" onclick="telaWhatsapp()">Atualizar</button>
+      </div>
+    </div>
+
+    <div class="abas" id="abasWa">
+      ${[['fila', `Fila${cont.agendado ? ' (' + cont.agendado + ')' : ''}`],
+         ['modelos', 'Modelos'],
+         ['historico', 'Histórico'],
+         ['conexao', 'Conexão e automações']]
+        .map(([k, r]) => `<button class="${WA_ABA === k ? 'on' : ''}" onclick="WA_ABA='${k}';telaWhatsapp()">${r}</button>`).join('')}
+    </div>
+
+    <div id="waCorpo"></div>`;
+
+  ({ fila: waFila, modelos: waModelos, historico: waHistorico, conexao: waConexao }[WA_ABA])(cfg, st, tpl, fila);
+}
+
+/* ---------- fila ---------- */
+function waFila(cfg, st, tpl, fila) {
+  const itens = fila.fila || [];
+  const agora = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  $('#waCorpo').innerHTML = `
+    ${!cfg.ativo ? `<div class="card" style="background:#FBF0D6;border-color:#E4C25C;margin-bottom:14px">
+      <b>As automações estão desligadas.</b> Nada sai sozinho até você ligar em
+      <a href="#" onclick="WA_ABA='conexao';telaWhatsapp();return false">Conexão e automações</a>.
+    </div>` : ''}
+    <p style="font-size:13px;color:var(--txt-2);margin:0 0 12px">
+      O que está agendado para sair. Dá para editar o texto, adiar, cancelar ou mandar agora.
+      Quem não for tocado sai no horário.</p>
+    <div class="card" style="padding:0;overflow:auto">
+      ${!itens.length ? '<p class="vazio">Nada na fila.</p>' :
+        `<table><thead><tr><th>Sai em</th><th>Paciente</th><th>Mensagem</th><th>Modelo</th><th></th></tr></thead><tbody>
+        ${itens.map((f) => `<tr>
+          <td style="white-space:nowrap"><b>${dataHora(f.agendado_para)}</b>
+            ${f.agendado_para <= agora ? '<br><small style="color:var(--alerta)">no próximo ciclo</small>' : ''}</td>
+          <td>${f.nome ? nomeCompleto(f) : esc(f.telefone)}<br>
+            <small style="color:var(--txt-2)">${esc(f.pais || '')}</small></td>
+          <td><small>${esc((f.mensagem || '').slice(0, 110))}${(f.mensagem || '').length > 110 ? '…' : ''}</small></td>
+          <td><small>${esc(f.template_chave || '—')}</small></td>
+          <td style="white-space:nowrap">
+            <button class="btn mini ghost" onclick="waEditarItem(${f.id})">Editar</button>
+            <button class="btn mini zap" onclick="waEnviarAgora(${f.id})">Enviar</button>
+            <button class="btn mini perigo" onclick="waCancelar(${f.id})">Cancelar</button>
+          </td></tr>`).join('')}</tbody></table>`}
+    </div>`;
+}
+
+async function waEditarItem(id) {
+  const { fila } = await api('/whatsapp/fila?status=agendado');
+  const f = fila.find((x) => x.id === id);
+  if (!f) return toast('Item não encontrado.');
+  modal('Ajustar mensagem', `
+    <div><label>Paciente</label><div>${f.nome ? nomeCompleto(f) : esc(f.telefone)}</div></div>
+    <div style="margin-top:10px"><label>Sai em (horário de Brasília)</label>
+      <input id="waQuando" type="datetime-local" value="${esc((f.agendado_para || '').replace(' ', 'T').slice(0, 16))}"></div>
+    <div style="margin-top:10px"><label>Mensagem</label>
+      <textarea id="waMsg" style="min-height:120px">${esc(f.mensagem)}</textarea></div>`, `
+    <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
+    <button class="btn ouro" id="waSalvarItem">Salvar</button>`);
+  $('#waSalvarItem').onclick = async () => {
+    await api('/whatsapp/fila/' + id, { method: 'PUT', body: {
+      mensagem: $('#waMsg').value, agendado_para: $('#waQuando').value.replace('T', ' ') + ':00' } });
+    fecharModal(); toast('Atualizado'); telaWhatsapp();
+  };
+}
+async function waCancelar(id) {
+  if (!confirm('Cancelar esta mensagem? Ela não será enviada.')) return;
+  await api('/whatsapp/fila/' + id, { method: 'DELETE' });
+  toast('Cancelada'); telaWhatsapp();
+}
+async function waEnviarAgora(id) {
+  try { await api(`/whatsapp/fila/${id}/enviar`, { method: 'POST', body: {} });
+    toast('Enviada'); telaWhatsapp();
+  } catch (e) { toast(e.message); }
+}
+
+/* ---------- modelos ---------- */
+function waModelos(cfg, st, tpl) {
+  const ts = tpl.templates;
+  const bloco = (modo, titulo, ajuda) => `
+    <div class="card" style="margin-bottom:14px;padding:0;overflow:auto">
+      <div style="padding:16px 16px 4px"><h3>${titulo}</h3>
+        <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 8px">${ajuda}</p></div>
+      <table><thead><tr><th>Modelo</th><th>Quando</th><th>Texto</th><th></th></tr></thead><tbody>
+      ${ts.filter((t) => t.modo === modo).map((t) => `<tr style="${t.ativo ? '' : 'opacity:.5'}">
+        <td><b>${esc(t.nome)}</b><br><span class="cod">${esc(t.chave)}</span></td>
+        <td><small>${modo === 'auto'
+          ? `${(WA_EVENTOS.find((e) => e[0] === t.evento) || [, '—'])[1]}
+             ${t.antecedencia_h ? `<br>${t.antecedencia_h >= 24 ? Math.round(t.antecedencia_h / 24) + ' dias' : t.antecedencia_h + 'h'} antes` : ''}
+             ${t.hora_envio ? `<br>às ${esc(t.hora_envio)} do paciente` : ''}`
+          : 'no clique'}</small></td>
+        <td><small>${esc((t.corpo || '').slice(0, 90))}${(t.corpo || '').length > 90 ? '…' : ''}</small></td>
+        <td><button class="btn mini ghost" onclick="waFormTemplate(${t.id})">Editar</button></td>
+      </tr>`).join('') || '<tr><td colspan="4" class="vazio">Nenhum modelo.</td></tr>'}
+      </tbody></table>
+    </div>`;
+
+  $('#waCorpo').innerHTML = `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+      <button class="btn ouro" onclick="waFormTemplate()">+ Modelo</button>
+    </div>
+    ${bloco('auto', 'Automáticos', 'Saem sozinhos quando o evento acontece, no horário local do paciente.')}
+    ${bloco('semi', 'De um clique', 'Ficam disponíveis nos botões do sistema. Você revisa antes de enviar.')}
+    <div class="card">
+      <h3>Variáveis</h3>
+      <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 10px">
+        Escreva entre chaves no texto do modelo. O sistema troca pelo dado do paciente na hora de enviar.</p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${WA_VARS.map((v) => `<span class="cod">{${v}}</span>`).join('')}
+      </div>
+    </div>`;
+}
+
+function waFormTemplate(id) {
+  const t = id ? CACHE.waTemplates.find((x) => x.id === id) : { modo: 'semi', ativo: 1, hora_envio: '09:00' };
+  modal(id ? 'Editar modelo' : 'Novo modelo', `
+    <div class="grid g2">
+      <div><label>Nome *</label><input id="wtNome" value="${esc(t.nome || '')}"></div>
+      <div><label>Chave</label><input id="wtChave" value="${esc(t.chave || '')}" ${id ? 'disabled' : ''}
+        placeholder="sem espaços, ex: aviso_exame"></div>
+      <div><label>Quando envia</label><select id="wtModo">
+        <option value="semi"${t.modo === 'semi' ? ' selected' : ''}>Só quando eu clicar</option>
+        <option value="auto"${t.modo === 'auto' ? ' selected' : ''}>Sozinho, por evento</option>
+      </select></div>
+      <div id="wrapEvento"><label>Evento</label><select id="wtEvento">
+        ${WA_EVENTOS.map(([v, r]) => `<option value="${v}"${t.evento === v ? ' selected' : ''}>${r}</option>`).join('')}
+      </select></div>
+      <div id="wrapAnt"><label>Antecedência</label>
+        <input id="wtAnt" type="number" step="0.5" value="${t.antecedencia_h || 0}">
+        <small style="color:var(--txt-2)">em horas — 72 = 3 dias</small></div>
+      <div id="wrapHora"><label>Hora no fuso do paciente</label>
+        <input id="wtHora" type="time" value="${esc(t.hora_envio || '09:00')}"></div>
+    </div>
+    <div style="margin-top:10px"><label>Texto</label>
+      <textarea id="wtCorpo" style="min-height:110px">${esc(t.corpo || '')}</textarea>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:7px">
+        ${WA_VARS.map((v) => `<button type="button" class="btn mini ghost"
+          onclick="waInserirVar('{${v}}')">{${v}}</button>`).join('')}
+      </div></div>
+    <label style="display:flex;gap:6px;align-items:center;font-weight:500;color:var(--txt);margin-top:12px">
+      <input type="checkbox" id="wtAtivo" style="width:auto"${t.ativo !== 0 ? ' checked' : ''}> Ativo</label>`, `
+    ${id ? `<button class="btn perigo" onclick="waExcluirTemplate(${id})">Excluir</button>` : ''}
+    <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
+    <button class="btn ouro" id="wtSalvar">Salvar</button>`);
+
+  const ajusta = () => {
+    const auto = $('#wtModo').value === 'auto';
+    ['wrapEvento', 'wrapAnt', 'wrapHora'].forEach((w) => { $('#' + w).style.display = auto ? '' : 'none'; });
+  };
+  $('#wtModo').onchange = ajusta; ajusta();
+
+  $('#wtSalvar').onclick = async () => {
+    const body = {
+      nome: $('#wtNome').value.trim(),
+      chave: (id ? t.chave : $('#wtChave').value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_')),
+      modo: $('#wtModo').value, evento: $('#wtEvento').value || null,
+      corpo: $('#wtCorpo').value, antecedencia_h: $('#wtAnt').value,
+      hora_envio: $('#wtHora').value, ativo: $('#wtAtivo').checked ? 1 : 0,
+    };
+    if (!body.nome || !body.corpo || !body.chave) return toast('Preencha nome, chave e texto.');
+    try {
+      if (id) await api('/whatsapp/templates/' + id, { method: 'PUT', body });
+      else await api('/whatsapp/templates', { method: 'POST', body });
+      fecharModal(); toast('Modelo salvo'); telaWhatsapp();
+    } catch (e) { toast(e.message); }
+  };
+}
+function waInserirVar(v) {
+  const c = $('#wtCorpo'); const i = c.selectionStart ?? c.value.length;
+  c.value = c.value.slice(0, i) + v + c.value.slice(c.selectionEnd ?? i);
+  c.focus(); c.selectionStart = c.selectionEnd = i + v.length;
+}
+async function waExcluirTemplate(id) {
+  if (!confirm('Excluir este modelo?')) return;
+  await api('/whatsapp/templates/' + id, { method: 'DELETE' });
+  fecharModal(); toast('Excluído'); telaWhatsapp();
+}
+
+/* ---------- histórico ---------- */
+async function waHistorico() {
+  $('#waCorpo').innerHTML = '<p class="vazio">Carregando…</p>';
+  const { fila } = await api('/whatsapp/fila?status=todos');
+  const enviados = fila.filter((f) => f.status !== 'agendado');
+  $('#waCorpo').innerHTML = `
+    <div class="card" style="padding:0;overflow:auto">
+      ${!enviados.length ? '<p class="vazio">Nenhuma mensagem enviada ainda.</p>' :
+        `<table><thead><tr><th>Quando</th><th>Paciente</th><th>Mensagem</th><th>Situação</th></tr></thead><tbody>
+        ${enviados.slice(0, 200).map((f) => `<tr>
+          <td style="white-space:nowrap">${dataHora(f.enviado_em || f.agendado_para)}</td>
+          <td>${f.nome ? nomeCompleto(f) : esc(f.telefone)}</td>
+          <td><small>${esc((f.mensagem || '').slice(0, 100))}</small>
+            ${f.erro ? `<br><small style="color:var(--erro)">${esc(f.erro)}</small>` : ''}</td>
+          <td><span class="tag ${f.status === 'enviado' ? 'ativo' : f.status === 'erro' ? 'devendo' : ''}">
+            ${f.status}</span>${f.modo === 'semi' ? '<br><small style="color:var(--txt-2)">no clique</small>' : ''}</td>
+        </tr>`).join('')}</tbody></table>`}
+    </div>`;
+}
+
+/* ---------- conexão ---------- */
+function waConexao(cfg, st) {
+  $('#waCorpo').innerHTML = `
+    <div class="grid g2">
+      <div class="card">
+        <h3>Evolution API</h3>
+        <div style="margin-top:10px"><label>URL do servidor</label>
+          <input id="waUrl" value="${esc(cfg.url || '')}" placeholder="https://evo.seudominio.com.br"></div>
+        <div style="margin-top:10px"><label>Chave da API</label>
+          <input id="waKey" type="password" placeholder="${cfg.tem_apikey ? esc(cfg.apikey_dica) : 'cole a apikey'}"></div>
+        <div style="margin-top:10px"><label>Nome da instância</label>
+          <input id="waInst" value="${esc(cfg.instancia || '')}" placeholder="luca"></div>
+        <button class="btn ouro" style="margin-top:12px" id="waSalvarCfg">Salvar</button>
+        <button class="btn ghost" style="margin-top:12px" id="waQr">Conectar / ver QR</button>
+        <div id="waQrBox" style="margin-top:12px"></div>
+        <p style="font-size:12.5px;color:var(--txt-2);margin-top:12px">
+          Situação agora: <b>${esc(st.estado || '—')}</b>.
+          A chave fica guardada no banco e nunca volta inteira para a tela.</p>
+      </div>
+
+      <div class="card">
+        <h3>Automações</h3>
+        <label style="display:flex;gap:8px;align-items:center;font-weight:600;color:var(--txt);margin-top:10px">
+          <input type="checkbox" id="waAtivo" style="width:auto"${cfg.ativo ? ' checked' : ''}>
+          Ligar o envio automático</label>
+        <p style="font-size:12.5px;color:var(--txt-2);margin:6px 0 12px">
+          Desligado, nada sai sozinho — os modelos de um clique continuam funcionando.</p>
+
+        <div class="grid g2">
+          <div><label>Não enviar antes de</label><input id="waJanIni" type="time" value="${esc(cfg.janela_ini)}"></div>
+          <div><label>Nem depois de</label><input id="waJanFim" type="time" value="${esc(cfg.janela_fim)}"></div>
+        </div>
+
+        <div style="margin-top:12px"><label>Fuso por país</label>
+          <textarea id="waFusos" style="min-height:110px;font-family:ui-monospace,monospace;font-size:12px">${
+            esc((cfg.fusos_pais || '').split('|').join('\n'))}</textarea>
+          <small style="color:var(--txt-2)">Um por linha: <code>País:Fuso</code>.
+            É o que faz a mensagem chegar às 9h de cada paciente, não às 9h daqui.</small></div>
+
+        <button class="btn ouro" style="margin-top:12px" id="waSalvarAuto">Salvar</button>
+
+        <hr style="border:0;border-top:1px solid var(--linha);margin:18px 0">
+        <h3>Disparador</h3>
+        <p style="font-size:12.5px;color:var(--txt-2);margin:6px 0 10px">
+          O Pages não tem agendador próprio. Crie um Worker com o arquivo
+          <code>worker-cron/index.js</code>, cole o token abaixo nele e marque
+          um cron de 15 em 15 minutos (<code>*/15 * * * *</code>).</p>
+        <label>Token do disparador</label>
+        <input value="${esc(cfg.token_cron || 'salve a configuração para gerar')}" readonly
+          onclick="this.select()" style="font-family:ui-monospace,monospace;font-size:12px">
+        <button class="btn ghost mini" style="margin-top:10px" id="waTestar">Rodar agora (teste)</button>
+        <div id="waTesteRes" style="margin-top:10px;font-size:13px"></div>
+      </div>
+    </div>`;
+
+  $('#waSalvarCfg').onclick = async () => {
+    await api('/whatsapp/config', { method: 'PUT', body: {
+      url: $('#waUrl').value, apikey: $('#waKey').value, instancia: $('#waInst').value,
+      ativo: cfg.ativo, janela_ini: cfg.janela_ini, janela_fim: cfg.janela_fim } });
+    toast('Conexão salva'); telaWhatsapp();
+  };
+  $('#waSalvarAuto').onclick = async () => {
+    await api('/whatsapp/config', { method: 'PUT', body: {
+      url: cfg.url, instancia: cfg.instancia, ativo: $('#waAtivo').checked,
+      janela_ini: $('#waJanIni').value, janela_fim: $('#waJanFim').value,
+      fusos_pais: $('#waFusos').value.split('\n').map((l) => l.trim()).filter(Boolean).join('|') } });
+    toast('Automações salvas'); telaWhatsapp();
+  };
+  $('#waQr').onclick = async () => {
+    const box = $('#waQrBox'); box.innerHTML = 'Pedindo o QR…';
+    try {
+      const r = await api('/whatsapp/conectar', { method: 'POST', body: {} });
+      box.innerHTML = r.qr
+        ? `<img src="${r.qr}" alt="QR code" style="width:100%;max-width:260px;border-radius:10px">
+           <p style="font-size:12.5px;color:var(--txt-2)">Abra o WhatsApp do Luca →
+             Aparelhos conectados → Conectar aparelho.</p>`
+        : `<p style="font-size:13px;color:var(--txt-2)">Sem QR — normalmente é porque já está conectado.</p>`;
+    } catch (e) { box.innerHTML = `<b style="color:var(--erro)">${esc(e.message)}</b>`; }
+  };
+  $('#waTestar').onclick = async () => {
+    const r = $('#waTesteRes'); r.textContent = 'Rodando…';
+    try {
+      const j = await api('/whatsapp/agendar', { method: 'POST', body: {} });
+      r.innerHTML = `<b style="color:var(--ok)">Fila montada.</b> ${j.criadas || 0} mensagens agendadas${
+        j.motivo ? ' · ' + esc(j.motivo) : ''}`;
+      WA_ABA = 'fila'; setTimeout(telaWhatsapp, 900);
+    } catch (e) { r.innerHTML = `<b style="color:var(--erro)">${esc(e.message)}</b>`; }
+  };
+}
+
+/* ---------- envio de um clique, usado pelas outras telas ---------- */
+async function waEnviar(pacienteId, chave, ctx, aposEnviar) {
+  if (!CACHE.waTemplates) CACHE.waTemplates = (await api('/whatsapp/templates')).templates;
+  const semi = CACHE.waTemplates.filter((t) => t.ativo && t.modo === 'semi');
+  const inicial = chave || (semi[0] && semi[0].chave);
+  if (!inicial) return toast('Nenhum modelo de um clique cadastrado.');
+
+  const previa = async (ch) => {
+    try { return (await api('/whatsapp/previa', { method: 'POST',
+      body: { template_chave: ch, paciente_id: pacienteId, ctx: ctx || {} } })).mensagem;
+    } catch { return ''; }
+  };
+
+  modal('Enviar no WhatsApp', `
+    <div><label>Modelo</label><select id="weTpl">
+      ${semi.map((t) => `<option value="${esc(t.chave)}"${t.chave === inicial ? ' selected' : ''}>${esc(t.nome)}</option>`).join('')}
+    </select></div>
+    <div style="margin-top:10px"><label>Mensagem</label>
+      <textarea id="weMsg" style="min-height:130px">carregando…</textarea></div>
+    <p style="font-size:12.5px;color:var(--txt-2);margin:8px 0 0">
+      Vai pelo WhatsApp conectado na Evolution e fica registrado no histórico.</p>`, `
+    <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
+    <button class="btn zap" id="weOk">Enviar</button>`);
+
+  $('#weMsg').value = await previa(inicial);
+  $('#weTpl').onchange = async () => { $('#weMsg').value = await previa($('#weTpl').value); };
+  $('#weOk').onclick = async () => {
+    const btn = $('#weOk'); btn.disabled = true;
+    try {
+      await api('/whatsapp/enviar', { method: 'POST', body: {
+        paciente_id: pacienteId, mensagem: $('#weMsg').value,
+        template_chave: $('#weTpl').value, ...(ctx && ctx.ref ? ctx.ref : {}) } });
+      fecharModal(); toast('Mensagem enviada');
+      aposEnviar && aposEnviar();
+    } catch (e) { toast(e.message); btn.disabled = false; }
+  };
 }
 
 /* ==========================================================

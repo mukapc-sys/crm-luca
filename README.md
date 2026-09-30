@@ -70,6 +70,7 @@ duas bases.
 | **Agenda** | Calendário mensal; dois cliques num dia criam o compromisso; consultas, follow-ups, cobranças e compromissos pessoais |
 | **Financeiro** | Filtro de período (hoje, esta semana, este mês, últimos 30 dias, personalizado). Recebido no período comparado ao anterior, entradas, a receber e vencido. Gráficos de entradas por dia ou mês, por forma de pagamento, por plano e por país, mais a tendência dos últimos 18 meses e a tabela dos mesmos números |
 | **Calculadora** | TMB e gasto energético total por Harris-Benedict, as mesmas constantes da planilha. Abre da ficha do paciente já preenchida com sexo, idade, altura e o peso da última consulta. Mostra faixas de déficit e superávit. Fatores de atividade editáveis em Configurações |
+| **WhatsApp** | Conexão com a Evolution API (QR na tela), modelos de mensagem com variáveis, fila do que vai sair com edição e cancelamento, e histórico. Automáticas saem no fuso do paciente; de um clique saem dos botões do sistema |
 | **Planos** | Cadastro com código, duração, preço BRL e USD, consultas incluídas, cadência de follow-up e regras |
 
 ## Regras que vieram da planilha
@@ -99,8 +100,26 @@ No console do D1, na ordem:
 
 1. `migrate-01.sql` — tabelas do funil
 2. `migrate-02.sql` — sexo e altura do paciente, fatores de atividade
+3. `migrate-03.sql` — WhatsApp: modelos, fila e fuso do paciente
 
 Instalação nova não precisa de nenhum: o `schema.sql` já vem completo.
+
+## Disparador do WhatsApp
+
+O Pages não tem agendador. Para as mensagens automáticas saírem:
+
+1. Tela **WhatsApp → Conexão e automações**: preencha a Evolution, salve,
+   ligue o envio automático e copie o **token do disparador**
+2. Cloudflare → Workers → Create → cole o conteúdo de `worker-cron/index.js`
+3. Troque `CRM` pela URL do Pages e `TOKEN` pelo token copiado
+4. No Worker: Settings → Triggers → Cron Triggers → `*/15 * * * *`
+
+Abrir a URL do Worker no navegador roda na hora, serve para testar.
+
+Regras de horário: a mensagem sai no fuso do paciente (mapa editável na
+tela), respeitando a janela configurada. Se o horário já passou há menos de
+3 horas, sai no ciclo seguinte; passou de 3 horas, o evento perdeu a hora e
+não envia — ninguém recebe "bom dia" às 19h.
 
 ## Ainda não entra nesta fase
 
