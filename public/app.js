@@ -1938,18 +1938,45 @@ function waConexao(cfg, st) {
     <div class="grid g2">
       <div class="card">
         <h3>Evolution API</h3>
-        <div style="margin-top:10px"><label>URL do servidor</label>
-          <input id="waUrl" value="${esc(cfg.url || '')}" placeholder="https://evo.seudominio.com.br"></div>
-        <div style="margin-top:10px"><label>Chave da API</label>
-          <input id="waKey" type="password" placeholder="${cfg.tem_apikey ? esc(cfg.apikey_dica) : 'cole a apikey'}"></div>
-        <div style="margin-top:10px"><label>Nome da instância</label>
-          <input id="waInst" value="${esc(cfg.instancia || '')}" placeholder="luca"></div>
-        <button class="btn ouro" style="margin-top:12px" id="waSalvarCfg">Salvar</button>
-        <button class="btn ghost" style="margin-top:12px" id="waQr">Conectar / ver QR</button>
+        ${(() => {
+          const f = cfg.fonte || {};
+          const vars = cfg.nomes_variaveis || {};
+          const daVar = (k) => f[k] && f[k] !== 'banco' && f[k] !== 'vazio';
+          const marca = (k) => daVar(k)
+            ? `<span class="tag ativo" style="margin-left:6px">variável ${esc(vars[k] || '')}</span>`
+            : f[k] === 'banco' ? '<span class="tag" style="margin-left:6px">salvo no banco</span>' : '';
+          const campo = (k, id, rot, valor, ph, tipo) => `
+            <div style="margin-top:10px">
+              <label>${rot}${marca(k)}</label>
+              <input id="${id}" ${tipo ? `type="${tipo}"` : ''} value="${esc(daVar(k) ? '' : valor)}"
+                placeholder="${esc(daVar(k) ? 'definido pela variável de ambiente' : ph)}"
+                ${daVar(k) ? 'disabled' : ''}>
+            </div>`;
+          return `
+            ${campo('wa_url', 'waUrl', 'URL do servidor', cfg.url || '', 'https://evo.seudominio.com.br')}
+            ${campo('wa_apikey', 'waKey', 'Chave da API', '',
+              cfg.tem_apikey ? cfg.apikey_dica : 'cole a apikey', 'password')}
+            ${campo('wa_instancia', 'waInst', 'Nome da instância', cfg.instancia || '', 'luca')}
+            ${['wa_url', 'wa_apikey', 'wa_instancia'].every(daVar)
+              ? `<p style="font-size:12.5px;color:var(--ok);margin-top:10px">
+                   Tudo vindo das variáveis do Pages. Nada de credencial no banco.</p>`
+              : `<button class="btn ouro" style="margin-top:12px" id="waSalvarCfg">Salvar</button>`}
+            <button class="btn ghost" style="margin-top:12px" id="waQr">Conectar / ver QR</button>`;
+        })()}
         <div id="waQrBox" style="margin-top:12px"></div>
         <p style="font-size:12.5px;color:var(--txt-2);margin-top:12px">
-          Situação agora: <b>${esc(st.estado || '—')}</b>.
-          A chave fica guardada no banco e nunca volta inteira para a tela.</p>
+          Situação agora: <b>${esc(st.estado || '—')}</b>.</p>
+        <details style="margin-top:10px">
+          <summary style="font-size:12.5px;color:var(--txt-2);cursor:pointer">
+            Onde colocar as variáveis</summary>
+          <p style="font-size:12.5px;color:var(--txt-2);margin:8px 0 0;line-height:1.7">
+            Cloudflare → seu projeto Pages → <b>Settings → Variables and Secrets</b>,
+            em <b>Production</b>. Marque cada uma como <b>Secret</b>:<br>
+            <code>EVOLUTION_URL</code> · <code>EVOLUTION_APIKEY</code> ·
+            <code>EVOLUTION_INSTANCIA</code> · <code>CRON_TOKEN</code><br>
+            Depois faça um novo deploy — variável só entra em vigor no deploy seguinte.
+            O que estiver em variável manda; o banco é só reserva.</p>
+        </details>
       </div>
 
       <div class="card">
@@ -1979,7 +2006,9 @@ function waConexao(cfg, st) {
           O Pages não tem agendador próprio. Crie um Worker com o arquivo
           <code>worker-cron/index.js</code>, cole o token abaixo nele e marque
           um cron de 15 em 15 minutos (<code>*/15 * * * *</code>).</p>
-        <label>Token do disparador</label>
+        <label>Token do disparador${
+          cfg.fonte && cfg.fonte.wa_token_cron && !['banco', 'vazio'].includes(cfg.fonte.wa_token_cron)
+            ? '<span class="tag ativo" style="margin-left:6px">variável CRON_TOKEN</span>' : ''}</label>
         <input value="${esc(cfg.token_cron || 'salve a configuração para gerar')}" readonly
           onclick="this.select()" style="font-family:ui-monospace,monospace;font-size:12px">
         <button class="btn ghost mini" style="margin-top:10px" id="waTestar">Rodar agora (teste)</button>
@@ -1987,9 +2016,10 @@ function waConexao(cfg, st) {
       </div>
     </div>`;
 
-  $('#waSalvarCfg').onclick = async () => {
+  const val = (id) => { const e = $('#' + id); return e && !e.disabled ? e.value : ''; };
+  if ($('#waSalvarCfg')) $('#waSalvarCfg').onclick = async () => {
     await api('/whatsapp/config', { method: 'PUT', body: {
-      url: $('#waUrl').value, apikey: $('#waKey').value, instancia: $('#waInst').value,
+      url: val('waUrl'), apikey: val('waKey'), instancia: val('waInst'),
       ativo: cfg.ativo, janela_ini: cfg.janela_ini, janela_fim: cfg.janela_fim } });
     toast('Conexão salva'); telaWhatsapp();
   };
