@@ -420,6 +420,99 @@ export async function onRequest(context) {
       return json({ token, usuario: { id: u.id, nome: u.nome, email: u.email, papel: u.papel } });
     }
 
+    // ==========================================================
+    // PÚBLICO — formulário de anamnese (sem login, é o paciente)
+    // ==========================================================
+    if (rota === '/publico/config' && metodo === 'GET') {
+      const r = await env.DB.prepare(
+        `SELECT codigo, nome, dias, preco_brl, preco_usd FROM planos
+          WHERE ativo=1 ORDER BY posicao, codigo`).all();
+      const st = await env.DB.prepare(
+        "SELECT key,value FROM settings WHERE key IN ('form_titulo','form_intro','form_agradecimento')").all();
+      const o = {}; (st.results || []).forEach((x) => { o[x.key] = x.value; });
+      return json({ planos: r.results || [], textos: o });
+    }
+
+    if (rota === '/publico/anamnese' && metodo === 'POST') {
+      const b = body || {};
+      // campo-isca: robô preenche, gente não vê
+      if (b.website) return json({ ok: true });
+
+      const nome = String(b.nome || '').trim();
+      const email = String(b.email || '').trim();
+      const telefone = String(b.telefone || '').trim();
+      if (!nome || nome.length < 3) return bad('Informe seu nome completo.');
+      if (!email || !email.includes('@')) return bad('Informe um e-mail válido.');
+      if (!telefone || telefone.replace(/\D/g, '').length < 8) return bad('Informe um telefone válido.');
+
+      const respostas = (b.respostas && typeof b.respostas === 'object') ? b.respostas : {};
+      const idioma = b.idioma === 'en' ? 'US' : 'BR';
+      const pais = String(b.pais || (idioma === 'US' ? 'US' : 'Brasil')).trim();
+
+      // reaproveita a ficha se a pessoa já existe; senão cria com código novo
+      let pac = await env.DB.prepare(
+        'SELECT * FROM pacientes WHERE lower(trim(email))=lower(trim(?)) LIMIT 1').bind(email).first();
+      if (!pac) pac = await env.DB.prepare(
+        'SELECT * FROM pacientes WHERE lower(trim(nome))=lower(trim(?)) LIMIT 1').bind(nome).first();
+
+      let pid, cod;
+      if (pac) {
+        pid = pac.id; cod = pac.cod;
+        await env.DB.prepare(
+          `UPDATE pacientes SET email=COALESCE(NULLIF(?,''),email),
+               telefone=COALESCE(NULLIF(?,''),telefone), pais=COALESCE(NULLIF(?,''),pais),
+               instagram=COALESCE(NULLIF(?,''),instagram), nascimento=COALESCE(NULLIF(?,''),nascimento),
+               objetivo=COALESCE(NULLIF(?,''),objetivo), altura_cm=COALESCE(?,altura_cm),
+               updated_at=datetime('now') WHERE id=?`
+        ).bind(email, telefone, pais, b.instagram || '', b.nascimento || '',
+          b.objetivo || '', b.altura_cm ? num(b.altura_cm) : null, pid).run();
+      } else {
+        const maior = await env.DB.prepare(
+          "SELECT MAX(CAST(cod AS INTEGER)) m FROM pacientes WHERE cod GLOB '[0-9]*'").first();
+        cod = String((Number(maior && maior.m) || 0) + 1);
+        const r = await env.DB.prepare(
+          `INSERT INTO pacientes (cod,nome,pais,email,telefone,instagram,nascimento,objetivo,
+               altura_cm,status,indicacao)
+           VALUES (?,?,?,?,?,?,?,?,?, 'lead', ?)`
+        ).bind(cod, nome, pais, email, telefone, b.instagram || null, b.nascimento || null,
+          b.objetivo || null, b.altura_cm ? num(b.altura_cm) : null, b.indicacao || null).run();
+        pid = r.meta.last_row_id;
+      }
+
+      await env.DB.prepare(
+        `INSERT INTO anamneses (paciente_id,cod,nome,email,telefone,respondido_em,origem,dados)
+         VALUES (?,?,?,?,?,?,?,?)`
+      ).bind(pid, cod, nome, email, telefone, hoje(), idioma, JSON.stringify(respostas)).run();
+
+      // primeiro peso vira ficha de consulta, para a evolução começar do dia zero
+      if (b.peso_kg && num(b.peso_kg) > 0) {
+        const kg = num(b.peso_kg);
+        await env.DB.prepare(
+          `INSERT INTO consultas (paciente_id,data,peso_kg,peso_lbs,observacoes)
+           VALUES (?,?,?,?,?)`
+        ).bind(pid, hoje(), kg, Math.round(kg * 2.20462 * 10) / 10,
+          'peso informado no formulário de anamnese').run();
+      }
+
+      // entra no funil se ainda não houver negociação aberta
+      const aberta = await env.DB.prepare(
+        `SELECT id FROM negociacoes WHERE paciente_id=? AND tipo='novo'
+            AND etapa NOT IN ('fechou','perdido') LIMIT 1`).bind(pid).first();
+      if (!aberta) {
+        const plano = b.plano_codigo
+          ? await env.DB.prepare('SELECT * FROM planos WHERE codigo=?').bind(b.plano_codigo).first() : null;
+        await env.DB.prepare(
+          `INSERT INTO negociacoes (paciente_id,tipo,etapa,origem,plano_id,valor_previsto,moeda,obs)
+           VALUES (?,'novo','novo',?,?,?,?,?)`
+        ).bind(pid, b.origem || 'Formulário', plano ? plano.id : null,
+          plano ? (pais === 'US' ? plano.preco_usd : plano.preco_brl) : 0,
+          pais === 'US' ? 'USD' : 'BRL',
+          b.plano_codigo ? `Pediu o plano ${b.plano_codigo} no formulário` : null).run();
+      }
+
+      return json({ ok: true, cod });
+    }
+
     // ---------- fila do WhatsApp: chamado pelo Worker de cron ----------
     // Não usa sessão: autentica pelo token gerado na tela de WhatsApp.
     if (rota === '/whatsapp/processar' && metodo === 'POST') {
@@ -824,6 +917,37 @@ export async function onRequest(context) {
     // ==========================================================
     // PLANOS
     // ==========================================================
+    // ---------- desempenho dos planos ----------
+    if (rota === '/planos/desempenho' && metodo === 'GET') {
+      const h = hoje();
+      const ativos = await env.DB.prepare(
+        `SELECT c.codigo_plano plano, COUNT(*) qtd
+           FROM contratos c JOIN pacientes pa ON pa.id=c.paciente_id
+          WHERE c.status='ativo' AND pa.status NOT IN ('encerrado','parceria')
+          GROUP BY plano`).all();
+      const vendas = await env.DB.prepare(
+        `SELECT codigo_plano plano, moeda, COUNT(*) qtd, SUM(valor_cobrado) total,
+                AVG(valor_cobrado) ticket
+           FROM contratos WHERE data_inicial >= ?
+          GROUP BY plano, moeda`).bind(addDias(h, -365)).all();
+      const recebido = await env.DB.prepare(
+        `SELECT c.codigo_plano plano, SUM(pg.valor_brl) total_brl
+           FROM pagamentos pg
+           JOIN parcelas p ON p.id=pg.parcela_id
+           JOIN contratos c ON c.id=p.contrato_id
+          WHERE pg.data >= ? GROUP BY plano`).bind(addDias(h, -365)).all();
+      const renovacao = await env.DB.prepare(
+        `SELECT c.codigo_plano plano,
+                SUM(CASE WHEN n.etapa='renovou' THEN 1 ELSE 0 END) renovou,
+                SUM(CASE WHEN n.etapa='saiu' THEN 1 ELSE 0 END) saiu
+           FROM negociacoes n JOIN contratos c ON c.id=n.contrato_origem
+          WHERE n.tipo='renovacao' GROUP BY plano`).all();
+      return json({
+        ativos: ativos.results || [], vendas: vendas.results || [],
+        recebido: recebido.results || [], renovacao: renovacao.results || [],
+      });
+    }
+
     if (rota === '/planos' && metodo === 'GET') {
       const r = await env.DB.prepare('SELECT * FROM planos ORDER BY posicao, codigo').all();
       return json({ planos: r.results || [] });
@@ -870,7 +994,7 @@ export async function onRequest(context) {
       // centenas de pacientes a diferença é de segundos para milissegundos.
       let sql = `
         SELECT pa.id, pa.cod, pa.nome, pa.apelido, pa.pais, pa.telefone, pa.email,
-               pa.objetivo, pa.status, pa.sexo, pa.altura_cm, pa.nascimento,
+               pa.objetivo, pa.status, pa.sexo, pa.altura_cm, pa.nascimento, pa.created_at,
                c.codigo_plano  AS plano_atual,
                c.data_final    AS data_final,
                uc.ultima_consulta,

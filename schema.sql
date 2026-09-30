@@ -301,3 +301,7 @@ INSERT OR IGNORE INTO wa_templates (chave,nome,modo,evento,corpo,antecedencia_h,
  ('boas_vindas','Boas-vindas ao fechar','semi','','{primeiro_nome}, seja muito bem-vindo! Seu plano {plano} começa agora e vai até {data_fim}. Vou te mandar os próximos passos por aqui.',0,'',11),
  ('pedir_retorno','Pedir retorno do paciente','semi','','Oi {primeiro_nome}! Faz um tempo que não recebo notícias suas. Como está indo?',0,'',12),
  ('cobranca_manual','Cobrança manual','semi','','Oi {primeiro_nome}! Passando pra lembrar da parcela {parcela} de {valor}, vencimento {vencimento}.',0,'',13);
+INSERT OR IGNORE INTO settings (key,value) VALUES
+ ('form_titulo','Anamnese — Luca Ternes'),
+ ('form_intro','Preencha com calma. São essas informações que eu uso para montar o seu plano antes da nossa call.'),
+ ('form_agradecimento','Recebi tudo. Vou analisar suas respostas e te chamo no WhatsApp para marcarmos a call.');

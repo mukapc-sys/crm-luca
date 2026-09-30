@@ -4,7 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>CRM — Luca Ternes</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230F2438'/><text x='50' y='68' font-size='52' font-family='Georgia' fill='%23C9A227' text-anchor='middle'>LT</text></svg>">
+<link rel="icon" type="image/png" sizes="32x32" href="/img/icon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/img/icon-16.png">
+<link rel="apple-touch-icon" href="/img/icon-180.png">
+<meta name="theme-color" content="#0F2438">
+<link rel="manifest" href="/manifest.webmanifest">
 <style>
 :root{
   --navy:#0F2438; --navy-2:#173350; --navy-3:#1E4062;
@@ -31,15 +35,17 @@ label{display:block;font-size:12px;font-weight:600;color:var(--txt-2);margin:0 0
 #login{min-height:100vh;display:grid;place-items:center;background:
   radial-gradient(900px 500px at 50% -10%,var(--navy-3),var(--navy)) ,var(--navy);padding:20px}
 .login-box{width:100%;max-width:380px;background:#fff;border-radius:16px;padding:30px 26px;box-shadow:var(--sombra)}
-.logo{width:64px;height:64px;border-radius:16px;background:var(--navy);color:var(--ouro);
-  display:grid;place-items:center;font-family:Georgia,serif;font-size:26px;margin:0 auto 14px}
+.logo{width:64px;height:64px;border-radius:16px;background:var(--navy);
+  display:grid;place-items:center;margin:0 auto 14px}
+.logo img{display:block}
 
 /* ---------- layout ---------- */
 #app{display:grid;grid-template-columns:232px 1fr;min-height:100vh}
 aside{background:var(--navy);color:#fff;padding:18px 12px;position:sticky;top:0;height:100vh;overflow:auto}
 .marca{display:flex;align-items:center;gap:10px;padding:0 6px 16px;border-bottom:1px solid rgba(255,255,255,.12);margin-bottom:12px}
 .marca div:first-child{width:38px;height:38px;border-radius:10px;background:rgba(201,162,39,.16);
-  color:var(--ouro);display:grid;place-items:center;font-family:Georgia,serif;font-size:17px;flex:none}
+  display:grid;place-items:center;flex:none}
+.marca img{display:block}
 .marca b{display:block;font-size:14px}
 .marca span{font-size:11px;color:rgba(255,255,255,.55)}
 nav button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:none;border:0;
@@ -175,7 +181,7 @@ tbody tr:hover{background:#FAFCFE}
 <!-- LOGIN -->
 <section id="login">
   <div class="login-box">
-    <div class="logo">LT</div>
+    <div class="logo"><img src="/img/logo.png" alt="Luca Ternes" width="26" height="48"></div>
     <h2 style="text-align:center">CRM Luca Ternes</h2>
     <p style="text-align:center;color:var(--txt-2);font-size:13px;margin:0 0 18px">Consultorias · Brasil e Estados Unidos</p>
     <div id="setupAviso" class="hide" style="background:#FBF0D6;color:#8A6D12;padding:10px 12px;border-radius:9px;font-size:13px;margin-bottom:14px">
@@ -199,7 +205,7 @@ tbody tr:hover{background:#FAFCFE}
 <div id="app" class="hide">
   <aside>
     <div class="marca">
-      <div>LT</div>
+      <div><img src="/img/logo.png" alt="" width="18" height="34"></div>
       <div><b>Luca Ternes</b><span>CRM de consultorias</span></div>
     </div>
     <nav id="nav">

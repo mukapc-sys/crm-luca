@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Anamnese — Luca Ternes</title>
+<meta name="robots" content="noindex">
+<link rel="icon" type="image/png" sizes="32x32" href="/img/icon-32.png">
+<link rel="apple-touch-icon" href="/img/icon-180.png">
+<meta name="theme-color" content="#0F2438">
+<style>
+:root{
+  --navy:#0F2438; --navy-3:#1E4062; --ouro:#C9A227;
+  --bg:#F4F6F9; --card:#fff; --linha:#E2E7EE;
+  --txt:#12202F; --txt-2:#5A6B7D; --erro:#C0392B; --ok:#1E8E5A;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-size:16px;line-height:1.55;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif}
+.topo{background:linear-gradient(160deg,var(--navy-3),var(--navy));color:#fff;padding:34px 20px 30px}
+.wrap{max-width:660px;margin:0 auto;padding:0 20px}
+.logo{width:58px;height:58px;border-radius:15px;background:rgba(201,162,39,.18);
+  display:grid;place-items:center;margin-bottom:14px}
+.logo img{display:block}
+.topo h1{margin:0 0 6px;font-size:25px;letter-spacing:-.02em}
+.topo p{margin:0;color:rgba(255,255,255,.75);font-size:15px}
+.idioma{display:flex;gap:6px;margin-top:16px}
+.idioma button{background:rgba(255,255,255,.12);color:#fff;border:0;border-radius:8px;
+  padding:6px 12px;font-size:13.5px;cursor:pointer;font-family:inherit}
+.idioma button.on{background:var(--ouro);color:var(--navy);font-weight:650}
+
+main{padding:22px 0 60px}
+.passo{background:var(--card);border:1px solid var(--linha);border-radius:14px;padding:20px;
+  margin-bottom:14px;box-shadow:0 1px 3px rgba(16,36,56,.06)}
+.passo h2{margin:0 0 3px;font-size:17px}
+.passo > p{margin:0 0 16px;color:var(--txt-2);font-size:14px}
+label{display:block;font-size:13.5px;font-weight:600;margin:0 0 5px}
+.campo{margin-bottom:15px}
+.campo small{display:block;color:var(--txt-2);font-size:12.5px;margin-top:4px;font-weight:400}
+input,select,textarea{font:inherit;width:100%;padding:11px 12px;border:1px solid var(--linha);
+  border-radius:10px;background:#fff;color:var(--txt)}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--navy-3);outline-offset:-1px;border-color:transparent}
+textarea{min-height:76px;resize:vertical}
+.dupla{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.opcoes{display:flex;flex-direction:column;gap:8px}
+.opcoes label{display:flex;gap:9px;align-items:flex-start;font-weight:400;font-size:15px;
+  padding:11px 13px;border:1px solid var(--linha);border-radius:10px;cursor:pointer;margin:0}
+.opcoes label:has(input:checked){border-color:var(--navy-3);background:#F4F8FD}
+.opcoes input{width:auto;margin-top:3px;flex:none}
+.isca{position:absolute;left:-9999px;width:1px;height:1px;opacity:0}
+.barra{position:sticky;bottom:0;background:var(--bg);padding:14px 0 18px;
+  border-top:1px solid var(--linha);margin-top:4px}
+.btn{background:var(--navy);color:#fff;border:0;border-radius:11px;padding:14px 22px;
+  font-size:16px;font-weight:650;cursor:pointer;font-family:inherit;width:100%}
+.btn:hover{background:var(--navy-3)}
+.btn:disabled{opacity:.55;cursor:default}
+.erro{color:var(--erro);font-size:14px;margin-top:10px;text-align:center}
+.pronto{text-align:center;padding:50px 20px}
+.pronto .marca{width:70px;height:70px;border-radius:50%;background:#E3F3EA;color:var(--ok);
+  display:grid;place-items:center;font-size:35px;margin:0 auto 18px}
+.pronto h2{margin:0 0 10px;font-size:23px}
+.pronto p{color:var(--txt-2);margin:0 auto;max-width:430px}
+.cod{display:inline-block;margin-top:20px;background:#EEF3F9;color:var(--navy-3);
+  font-family:ui-monospace,Menlo,monospace;font-weight:700;padding:9px 18px;border-radius:9px}
+.obrig{color:var(--erro)}
+@media(max-width:560px){ .dupla{grid-template-columns:1fr} .topo h1{font-size:22px} }
+</style>
+</head>
+<body>
+
+<div class="topo">
+  <div class="wrap">
+    <div class="logo"><img src="/img/logo.png" alt="Luca Ternes" width="24" height="44"></div>
+    <h1 id="tTitulo">Anamnese — Luca Ternes</h1>
+    <p id="tIntro">Preencha com calma. São essas informações que eu uso para montar o seu plano.</p>
+    <div class="idioma">
+      <button data-idioma="pt" class="on">Português</button>
+      <button data-idioma="en">English</button>
+    </div>
+  </div>
+</div>
+
+<main class="wrap">
+  <form id="form" novalidate>
+    <input type="text" name="website" id="isca" class="isca" tabindex="-1" autocomplete="off" aria-hidden="true">
+    <div id="passos"></div>
+    <div class="barra">
+      <button type="submit" class="btn" id="enviar">Enviar</button>
+      <p class="erro" id="erro"></p>
+    </div>
+  </form>
+  <div id="pronto" class="pronto" hidden>
+    <div class="marca">✓</div>
+    <h2 id="pTitulo">Recebido</h2>
+    <p id="pTexto"></p>
+    <div class="cod" id="pCod" hidden></div>
+  </div>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+let IDIOMA = (navigator.language || '').toLowerCase().startsWith('pt') ? 'pt' : 'en';
+let PLANOS = [], TEXTOS = {};
+
+/* Perguntas: as mesmas do formulário que o Luca já usa, agrupadas em blocos.
+   'campo' marca o que vira dado estruturado no CRM; o resto vira anamnese. */
+const T = {
+  pt: {
+    enviar: 'Enviar', enviando: 'Enviando…',
+    obrigatorio: 'Preencha os campos marcados.',
+    prontoTitulo: 'Recebido',
+    codigo: 'Seu código: ',
+    blocos: [
+      ['Quem é você', 'Para eu saber com quem estou falando.', [
+        ['nome', 'Nome completo', 'texto', 1],
+        ['email', 'E-mail', 'email', 1],
+        ['telefone', 'WhatsApp com DDI e DDD', 'tel', 1, 'Ex.: +55 51 99999-9999 ou +1 212 555-0000'],
+        ['pais', 'Onde você mora', 'pais', 1],
+        ['instagram', 'Instagram', 'texto', 0],
+        ['nascimento', 'Data de nascimento', 'data', 0],
+        ['profissao', 'Profissão', 'texto', 0],
+        ['indicacao', 'Alguém indicou meu trabalho? Quem?', 'texto', 0],
+      ]],
+      ['Objetivo e medidas', 'O ponto de partida.', [
+        ['objetivo', 'Seu principal objetivo', 'objetivo', 1],
+        ['plano_codigo', 'Plano de interesse', 'plano', 0],
+        ['peso_kg', 'Peso', 'peso', 1],
+        ['altura_cm', 'Altura', 'altura', 1],
+      ]],
+      ['Saúde', 'Seja específico — é o que me impede de errar.', [
+        ['doenca', 'Tem alguma doença (hipertensão, diabetes, tireoide, lipedema, SOP)? Faz uso de medicação, qual?', 'longo', 0],
+        ['restricao_alimentar', 'Restrição, alergia, intolerância ou alimento que quer evitar? Qual e com que intensidade?', 'longo', 0],
+        ['intestino', 'Como é o seu intestino?', 'radio', 1,
+          ['Normal', 'Constipado (fezes ressecadas, de difícil evacuação e não regulares)', 'Diarreia constante']],
+        ['agua', 'Quantos litros de água pura você bebe por dia?', 'texto', 1],
+        ['suplementos', 'Já usou ou usa suplementos? Qual, quando e em que dose?', 'longo', 0],
+        ['suplemento_incluir', 'Se não usa hoje, quer incluir no plano?', 'texto', 0],
+        ['peptideo', 'Já usou ou usa peptídeo? Qual, quando e em que dose?', 'longo', 0],
+        ['restricao_fisica', 'Tem alguma restrição física? Qual?', 'longo', 0],
+      ]],
+      ['Treino', 'Para eu encaixar a alimentação no seu dia.', [
+        ['atividade', 'Qual atividade física você pratica ou quer praticar?', 'texto', 0],
+        ['frequencia', 'Quantas vezes por semana?', 'texto', 0],
+        ['horario_treino', 'Que horas você treina ou pretende treinar?', 'texto', 0],
+        ['segunda_atividade', 'Faz uma segunda atividade no dia? Conte qual e em que horário.', 'longo', 0],
+      ]],
+      ['Sua rotina', 'Os horários de verdade, não os ideais.', [
+        ['acorda', 'Que horas acorda', 'hora', 1],
+        ['cafe', 'Café da manhã', 'hora', 0],
+        ['almoco', 'Almoço', 'hora', 0],
+        ['lanche', 'Lanche', 'hora', 0],
+        ['jantar', 'Jantar', 'hora', 0],
+        ['dorme', 'Que horas dorme', 'hora', 1],
+        ['pref_jantar', 'Sua preferência no jantar', 'radio', 0,
+          ['Comida como no almoço (ex.: arroz e frango)', 'Lanche como no café da manhã (ex.: pão com ovo)']],
+        ['manter', 'Algum alimento que você faz questão de manter no plano? Qual?', 'longo', 0],
+        ['relevante', 'Tem algum detalhe que você acha importante eu saber?', 'longo', 0],
+      ]],
+      ['Combinado', 'Duas confirmações antes de começarmos.', [
+        ['ciente_rotina', 'Você está ciente de que precisará me passar sua rotina pelo WhatsApp diariamente?', 'radio', 1, ['Sim', 'Não']],
+        ['ciente_texto', 'Tenho uma limitação auditiva severa e tenho dificuldade com áudios no WhatsApp. Posso contar com você para mandar as mensagens em texto?', 'radio', 1, ['Sim', 'Não']],
+      ]],
+    ],
+    objetivos: ['Emagrecimento', 'Definição muscular', 'Ganho de massa muscular', 'Manutenção do peso'],
+    paises: ['Brasil', 'Estados Unidos', 'Portugal', 'Inglaterra', 'Canadá', 'Outro'],
+    semPlano: 'Ainda não sei',
+  },
+  en: {
+    enviar: 'Submit', enviando: 'Sending…',
+    obrigatorio: 'Please fill in the required fields.',
+    prontoTitulo: 'All set',
+    codigo: 'Your code: ',
+    blocos: [
+      ['About you', 'So I know who I am talking to.', [
+        ['nome', 'Full name', 'texto', 1],
+        ['email', 'Email', 'email', 1],
+        ['telefone', 'WhatsApp with country code', 'tel', 1, 'E.g. +1 212 555-0000'],
+        ['pais', 'Where you live', 'pais', 1],
+        ['instagram', 'Instagram', 'texto', 0],
+        ['nascimento', 'Date of birth', 'data', 0],
+        ['profissao', 'Occupation', 'texto', 0],
+        ['indicacao', 'Did someone refer me to you? Who?', 'texto', 0],
+      ]],
+      ['Goal and measurements', 'The starting point.', [
+        ['objetivo', 'Your main goal', 'objetivo', 1],
+        ['plano_codigo', 'Plan you are interested in', 'plano', 0],
+        ['peso_kg', 'Weight', 'peso', 1],
+        ['altura_cm', 'Height', 'altura', 1],
+      ]],
+      ['Health', 'Be specific — this is what keeps me from getting it wrong.', [
+        ['doenca', 'Any medical condition (high blood pressure, diabetes, thyroid, lipedema, PCOS)? Any medication?', 'longo', 0],
+        ['restricao_alimentar', 'Any restriction, allergy, intolerance or food you want to avoid? Which one and how severe?', 'longo', 0],
+        ['intestino', 'How are your bowel movements?', 'radio', 1,
+          ['Normal', 'Constipated (hard, difficult, irregular)', 'Frequent diarrhea']],
+        ['agua', 'How much plain water do you drink per day?', 'texto', 1],
+        ['suplementos', 'Have you used or do you use supplements? Which, when and what dose?', 'longo', 0],
+        ['suplemento_incluir', 'If you do not use any, would you like to include them?', 'texto', 0],
+        ['peptideo', 'Have you used or do you use peptides? Which, when and what dose?', 'longo', 0],
+        ['restricao_fisica', 'Any physical limitation? Which?', 'longo', 0],
+      ]],
+      ['Training', 'So I can fit your meals into your day.', [
+        ['atividade', 'What physical activity do you do or want to do?', 'texto', 0],
+        ['frequencia', 'How many times per week?', 'texto', 0],
+        ['horario_treino', 'What time do you train or plan to train?', 'texto', 0],
+        ['segunda_atividade', 'Do you do a second activity in the day? Tell me which and when.', 'longo', 0],
+      ]],
+      ['Your routine', 'The real times, not the ideal ones.', [
+        ['acorda', 'Wake up time', 'hora', 1],
+        ['cafe', 'Breakfast', 'hora', 0],
+        ['almoco', 'Lunch', 'hora', 0],
+        ['lanche', 'Snack', 'hora', 0],
+        ['jantar', 'Dinner', 'hora', 0],
+        ['dorme', 'Bedtime', 'hora', 1],
+        ['pref_jantar', 'Your preference for dinner', 'radio', 0,
+          ['A full meal like lunch (e.g. rice and chicken)', 'A light meal like breakfast (e.g. eggs on toast)']],
+        ['manter', 'Any food you really want to keep in your plan? Which?', 'longo', 0],
+        ['relevante', 'Anything else you think I should know?', 'longo', 0],
+      ]],
+      ['Agreement', 'Two confirmations before we start.', [
+        ['ciente_rotina', 'Do you understand that you will need to send me your daily routine on WhatsApp?', 'radio', 1, ['Yes', 'No']],
+        ['ciente_texto', 'I have severe hearing loss and struggle with voice notes on WhatsApp. Can I count on you to send text messages?', 'radio', 1, ['Yes', 'No']],
+      ]],
+    ],
+    objetivos: ['Weight loss', 'Muscle definition', 'Muscle gain', 'Weight maintenance'],
+    paises: ['United States', 'Brazil', 'Portugal', 'United Kingdom', 'Canada', 'Other'],
+    semPlano: 'Not sure yet',
+  },
+};
+const PAIS_INTERNO = { 'Estados Unidos': 'US', 'United States': 'US', 'Brazil': 'Brasil',
+  'United Kingdom': 'Inglaterra', 'Canada': 'Canadá', 'Other': 'Outro' };
+
+function campoHtml(c) {
+  const [id, rot, tipo, obrig, extra] = c;
+  const req = obrig ? ' <span class="obrig">*</span>' : '';
+  const nome = `c_${id}`;
+  let corpo = '';
+  if (tipo === 'longo') corpo = `<textarea id="${nome}"></textarea>`;
+  else if (tipo === 'hora') corpo = `<input id="${nome}" type="time">`;
+  else if (tipo === 'data') corpo = `<input id="${nome}" type="date">`;
+  else if (tipo === 'email') corpo = `<input id="${nome}" type="email" autocomplete="email">`;
+  else if (tipo === 'tel') corpo = `<input id="${nome}" type="tel" autocomplete="tel">`;
+  else if (tipo === 'pais') corpo =
+    `<select id="${nome}">${T[IDIOMA].paises.map((p) => `<option>${esc(p)}</option>`).join('')}</select>`;
+  else if (tipo === 'objetivo') corpo =
+    `<select id="${nome}"><option value=""></option>${
+      T[IDIOMA].objetivos.map((o) => `<option>${esc(o)}</option>`).join('')}</select>`;
+  else if (tipo === 'plano') corpo =
+    `<select id="${nome}"><option value="">${esc(T[IDIOMA].semPlano)}</option>${
+      PLANOS.map((p) => `<option value="${esc(p.codigo)}">${esc(p.nome)}</option>`).join('')}</select>`;
+  else if (tipo === 'peso') corpo =
+    `<div class="dupla"><input id="${nome}" type="number" step="0.1" placeholder="kg">
+       <input id="${nome}_lb" type="number" step="0.1" placeholder="lb"></div>`;
+  else if (tipo === 'altura') corpo =
+    `<div class="dupla"><input id="${nome}" type="number" step="0.1" placeholder="cm">
+       <div class="dupla" style="gap:8px">
+         <input id="${nome}_ft" type="number" step="1" placeholder="ft">
+         <input id="${nome}_in" type="number" step="0.1" placeholder="in"></div></div>`;
+  else if (tipo === 'radio') corpo =
+    `<div class="opcoes">${(extra || []).map((o, i) => `<label>
+      <input type="radio" name="${nome}" value="${esc(o)}"> ${esc(o)}</label>`).join('')}</div>`;
+  else corpo = `<input id="${nome}" type="text">`;
+
+  const dica = (tipo === 'tel' && extra) ? `<small>${esc(extra)}</small>` : '';
+  return `<div class="campo" data-id="${id}" data-tipo="${tipo}" data-obrig="${obrig}">
+    <label for="${nome}">${esc(rot)}${req}</label>${corpo}${dica}</div>`;
+}
+
+function montar() {
+  const t = T[IDIOMA];
+  document.documentElement.lang = IDIOMA === 'pt' ? 'pt-BR' : 'en';
+  // texto personalizado é escrito em português: em inglês usa o padrão
+  const pt = IDIOMA === 'pt';
+  $('#tTitulo').textContent = (pt && TEXTOS.form_titulo)
+    || (pt ? 'Anamnese — Luca Ternes' : 'Health questionnaire — Luca Ternes');
+  $('#tIntro').textContent = (pt && TEXTOS.form_intro) || (pt
+    ? 'Preencha com calma. São essas informações que eu uso para montar o seu plano.'
+    : 'Take your time. This is what I use to build your plan before our call.');
+  $('#enviar').textContent = t.enviar;
+  $('#passos').innerHTML = t.blocos.map(([titulo, ajuda, campos]) => `
+    <section class="passo"><h2>${esc(titulo)}</h2><p>${esc(ajuda)}</p>
+      ${campos.map(campoHtml).join('')}</section>`).join('');
+  ligarConversores();
+}
+
+// kg ↔ lb e cm ↔ pés/polegadas, porque ele atende nos dois sistemas
+function ligarConversores() {
+  const KG = 0.45359237;
+  const kg = $('#c_peso_kg'), lb = $('#c_peso_kg_lb');
+  if (kg && lb) {
+    kg.oninput = () => { lb.value = kg.value ? (+kg.value / KG).toFixed(1) : ''; };
+    lb.oninput = () => { kg.value = lb.value ? (+lb.value * KG).toFixed(1) : ''; };
+  }
+  const cm = $('#c_altura_cm'), ft = $('#c_altura_cm_ft'), pol = $('#c_altura_cm_in');
+  if (cm && ft && pol) {
+    cm.oninput = () => {
+      if (!cm.value) { ft.value = ''; pol.value = ''; return; }
+      const tot = +cm.value / 2.54;
+      ft.value = Math.floor(tot / 12); pol.value = (tot - Math.floor(tot / 12) * 12).toFixed(1);
+    };
+    const daImperial = () => {
+      const f = +ft.value || 0, i = +pol.value || 0;
+      cm.value = (f || i) ? ((f * 12 + i) * 2.54).toFixed(1) : '';
+    };
+    ft.oninput = daImperial; pol.oninput = daImperial;
+  }
+}
+
+function valor(id, tipo) {
+  if (tipo === 'radio') {
+    const m = document.querySelector(`input[name="c_${id}"]:checked`);
+    return m ? m.value : '';
+  }
+  const e = $('#c_' + id);
+  return e ? e.value.trim() : '';
+}
+
+document.querySelectorAll('.idioma button').forEach((b) => {
+  b.onclick = () => {
+    IDIOMA = b.dataset.idioma;
+    document.querySelectorAll('.idioma button').forEach((x) => x.classList.toggle('on', x === b));
+    montar();
+  };
+});
+
+$('#form').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const t = T[IDIOMA];
+  const btn = $('#enviar'); const err = $('#erro');
+  err.textContent = '';
+
+  const respostas = {}; let faltando = null;
+  for (const [titulo, , campos] of t.blocos) {
+    for (const c of campos) {
+      const [id, rot, tipo, obrig] = c;
+      const v = valor(id, tipo);
+      if (obrig && !v && !faltando) faltando = id;
+      if (v) respostas[rot] = v;
+    }
+  }
+  if (faltando) {
+    err.textContent = t.obrigatorio;
+    const alvo = document.querySelector(`[data-id="${faltando}"]`);
+    if (alvo) { alvo.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const inp = alvo.querySelector('input,select,textarea'); if (inp) inp.focus(); }
+    return;
+  }
+
+  const paisRot = valor('pais', 'pais');
+  const corpo = {
+    idioma: IDIOMA, website: $('#isca').value,
+    nome: valor('nome', 'texto'), email: valor('email', 'email'), telefone: valor('telefone', 'tel'),
+    pais: PAIS_INTERNO[paisRot] || paisRot,
+    instagram: valor('instagram', 'texto'), nascimento: valor('nascimento', 'data'),
+    objetivo: valor('objetivo', 'objetivo'), plano_codigo: valor('plano_codigo', 'plano'),
+    peso_kg: valor('peso_kg', 'peso'), altura_cm: valor('altura_cm', 'altura'),
+    indicacao: valor('indicacao', 'texto'), origem: 'Formulário',
+    respostas,
+  };
+
+  btn.disabled = true; btn.textContent = t.enviando;
+  try {
+    const r = await fetch('/api/publico/anamnese', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(corpo) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'erro');
+    $('#form').hidden = true;
+    $('#pronto').hidden = false;
+    $('#pTitulo').textContent = t.prontoTitulo;
+    $('#pTexto').textContent = (IDIOMA === 'pt' && TEXTOS.form_agradecimento) ||
+      (IDIOMA === 'pt' ? 'Recebi tudo. Te chamo no WhatsApp em breve.'
+                       : 'Got everything. I will message you on WhatsApp soon.');
+    if (j.cod) { $('#pCod').hidden = false; $('#pCod').textContent = t.codigo + j.cod; }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch (e) {
+    err.textContent = e.message; btn.disabled = false; btn.textContent = t.enviar;
+  }
+};
+
+(async () => {
+  try {
+    const c = await fetch('/api/publico/config').then((r) => r.json());
+    PLANOS = c.planos || []; TEXTOS = c.textos || {};
+  } catch { /* sem config: o formulário funciona igual */ }
+  document.querySelectorAll('.idioma button').forEach((b) =>
+    b.classList.toggle('on', b.dataset.idioma === IDIOMA));
+  montar();
+})();
+</script>
+</body>
+</html>

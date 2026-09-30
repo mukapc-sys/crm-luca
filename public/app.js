@@ -615,9 +615,39 @@ async function relatorioFunil() {
 }
 
 /* ==========================================================
-   PACIENTES
+   PACIENTES — separados pelo que exige ação, não por uma lista só
    ========================================================== */
-let FILTRO = { q: '', status: '', objetivo: '', pais: '' };
+let FILTRO = { q: '', objetivo: '', pais: '', plano: '' };
+let SEGMENTO = 'acompanhamento';
+
+// Cada segmento é uma pergunta de negócio, não um status de banco.
+const SEGMENTOS = [
+  ['acompanhamento', 'Em acompanhamento', 'Plano ativo e pagamento em dia.',
+    (p) => p.status === 'ativo' && !p.parcelas_abertas && !venceEm(p, 30)],
+  ['renovacao', 'Renovação chegando', 'Plano termina nos próximos 30 dias.',
+    (p) => p.status === 'ativo' && venceEm(p, 30)],
+  ['devendo', 'Devendo', 'Tem parcela em aberto.',
+    (p) => p.status === 'devendo' || (p.status === 'ativo' && p.parcelas_abertas > 0)],
+  ['leads', 'Leads', 'Ainda não fecharam.', (p) => p.status === 'lead'],
+  ['inativos', 'Inativos', 'Encerrados e parcerias.',
+    (p) => p.status === 'encerrado' || p.status === 'parceria'],
+];
+
+function venceEm(p, dias) {
+  if (!p.data_final) return false;
+  const d = diasAte(p.data_final);
+  return d !== null && d <= dias;
+}
+function diasAte(data) {
+  if (!data) return null;
+  const a = new Date(String(data).slice(0, 10) + 'T12:00:00Z');
+  const b = new Date(hojeISO() + 'T12:00:00Z');
+  return isNaN(a) ? null : Math.round((a - b) / 86400000);
+}
+const semFicha = (p) => {
+  if (!p.ultima_consulta) return null;
+  return -diasAte(p.ultima_consulta);
+};
 
 async function telaPacientes() {
   $('#tela').innerHTML = `
@@ -629,13 +659,10 @@ async function telaPacientes() {
         <button class="btn ouro" onclick="abrirPaciente()">+ Paciente</button>
       </div>
     </div>
+    <div id="pacSegmentos" class="grid" style="grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px"></div>
     <div class="filtros">
       <div class="busca"><label>Buscar por código, nome ou apelido</label>
         <input id="fQ" placeholder="ex.: 142, Mariana, Mari do Jonas" value="${esc(FILTRO.q)}"></div>
-      <div><label>Situação</label><select id="fStatus">
-        <option value="">Todas</option>
-        ${STATUS.map((s) => `<option value="${s}"${FILTRO.status === s ? ' selected' : ''}>${s[0].toUpperCase() + s.slice(1)}</option>`).join('')}
-      </select></div>
       <div><label>Objetivo</label><select id="fObj">
         <option value="">Todos</option>
         ${OBJETIVOS.map((o) => `<option${FILTRO.objetivo === o ? ' selected' : ''}>${o}</option>`).join('')}
@@ -644,65 +671,117 @@ async function telaPacientes() {
         <option value="">Todos</option>
         ${PAISES.map((x) => `<option${FILTRO.pais === x ? ' selected' : ''}>${esc(x)}</option>`).join('')}
       </select></div>
-      <button class="btn ghost" onclick="FILTRO={q:'',status:'',objetivo:'',pais:''};telaPacientes()">Limpar</button>
+      <div><label>Plano</label><select id="fPlano">
+        <option value="">Todos</option>
+        ${PLANOS.map((p) => `<option value="${esc(p.codigo)}"${FILTRO.plano === p.codigo ? ' selected' : ''}>${esc(p.codigo)}</option>`).join('')}
+      </select></div>
+      <button class="btn ghost" onclick="FILTRO={q:'',objetivo:'',pais:'',plano:''};telaPacientes()">Limpar</button>
     </div>
     <div class="card" style="padding:0;overflow:auto"><div id="tabelaPac"></div></div>`;
 
-  // filtro roda no navegador: sem ida ao servidor a cada tecla
   $('#fQ').oninput = () => { FILTRO.q = $('#fQ').value; pintarPacientes(); };
-  $('#fStatus').onchange = () => { FILTRO.status = $('#fStatus').value; pintarPacientes(); };
   $('#fObj').onchange = () => { FILTRO.objetivo = $('#fObj').value; pintarPacientes(); };
   $('#fPais').onchange = () => { FILTRO.pais = $('#fPais').value; pintarPacientes(); };
+  $('#fPlano').onchange = () => { FILTRO.plano = $('#fPlano').value; pintarPacientes(); };
   carregarPacientes();
 }
 
-// busca no servidor só quando precisa (primeira vez ou depois de salvar)
 async function carregarPacientes(forcar) {
   if (!CACHE.pacientes || forcar) {
     if ($('#tabelaPac')) $('#tabelaPac').innerHTML = '<p class="vazio">Carregando…</p>';
     CACHE.pacientes = (await api('/pacientes')).pacientes;
-    // a lista de países vem do que existe de verdade na base
     PAISES = [...new Set([...PAISES_BASE, ...CACHE.pacientes.map((x) => x.pais).filter(Boolean)])].sort();
+    if (!PLANOS.length) PLANOS = (await api('/planos')).planos;
   }
   pintarPacientes();
 }
 
 function pintarPacientes() {
   if (!$('#tabelaPac')) return;
+  const base = CACHE.pacientes || [];
   const f = FILTRO;
   const q = f.q.trim().toLowerCase();
-  const pacientes = (CACHE.pacientes || []).filter((x) => {
-    if (f.status && x.status !== f.status) return false;
+
+  // busca atravessa os segmentos: procurar alguém não é navegar
+  const buscando = q.length > 0;
+
+  const passaFiltro = (x) => {
     if (f.pais && x.pais !== f.pais) return false;
     if (f.objetivo && !(x.objetivo || '').includes(f.objetivo)) return false;
+    if (f.plano && x.plano_atual !== f.plano) return false;
     if (!q) return true;
     return [x.nome, x.apelido, x.cod, x.email, x.telefone]
       .some((v) => (v || '').toString().toLowerCase().includes(q));
-  });
+  };
 
-  const total = (CACHE.pacientes || []).length;
-  $('#pacContagem').textContent = pacientes.length === total
-    ? `${total} paciente${total === 1 ? '' : 's'}`
-    : `${pacientes.length} de ${total} pacientes`;
+  const filtrados = base.filter(passaFiltro);
+  const seg = {};
+  SEGMENTOS.forEach(([k, , , teste]) => { seg[k] = filtrados.filter(teste); });
 
-  $('#tabelaPac').innerHTML = !pacientes.length
-    ? '<p class="vazio">Nenhum paciente com esses filtros.</p>'
+  $('#pacSegmentos').innerHTML = SEGMENTOS.map(([k, rot, ajuda]) => `
+    <button class="kpi" style="text-align:left;cursor:pointer;border-width:${SEGMENTO === k && !buscando ? '2px' : '1px'};
+      border-color:${SEGMENTO === k && !buscando ? 'var(--ouro)' : 'var(--linha)'};font:inherit"
+      onclick="SEGMENTO='${k}';FILTRO.q='';if($('#fQ'))$('#fQ').value='';pintarPacientes()">
+      <span>${rot}</span><b>${seg[k].length}</b>
+      <small style="color:var(--txt-2);display:block;font-size:11.5px;line-height:1.35">${ajuda}</small>
+    </button>`).join('');
+
+  const lista = buscando ? filtrados : seg[SEGMENTO];
+  const rotulo = SEGMENTOS.find(([k]) => k === SEGMENTO);
+  $('#pacContagem').textContent = buscando
+    ? `${lista.length} encontrado${lista.length === 1 ? '' : 's'} em toda a base`
+    : `${lista.length} · ${rotulo[1].toLowerCase()} · ${base.length} no total`;
+
+  // a coluna que mais importa muda com o segmento
+  const colDestaque = { acompanhamento: 'Última ficha', renovacao: 'Termina em',
+    devendo: 'Em aberto', leads: 'Entrou', inativos: 'Terminou' }[buscando ? 'acompanhamento' : SEGMENTO];
+
+  const celDestaque = (x) => {
+    if (buscando || SEGMENTO === 'acompanhamento') {
+      const d = semFicha(x);
+      if (d === null) return '<small style="color:var(--erro)">nenhuma ficha</small>';
+      return `${dataBR(x.ultima_consulta)}<br><small style="color:${d > 20 ? 'var(--alerta)' : 'var(--txt-2)'}">há ${d} dias</small>`;
+    }
+    if (SEGMENTO === 'renovacao') {
+      const d = diasAte(x.data_final);
+      return `<b style="color:${d <= 7 ? 'var(--erro)' : 'var(--alerta)'}">${d} dias</b><br>
+        <small style="color:var(--txt-2)">${dataBR(x.data_final)}</small>`;
+    }
+    if (SEGMENTO === 'devendo')
+      return `<span class="tag devendo">${x.parcelas_abertas} parcela${x.parcelas_abertas === 1 ? '' : 's'}</span>`;
+    if (SEGMENTO === 'leads') return dataBR(x.created_at);
+    return dataBR(x.data_final);
+  };
+
+  const acao = (x) => {
+    if (!buscando && SEGMENTO === 'renovacao')
+      return `<button class="btn mini" onclick="irPara('funil')">Ver funil</button>`;
+    if (!buscando && SEGMENTO === 'devendo')
+      return `<button class="btn mini zap" onclick="waEnviar(${x.id},'cobranca_manual',{})">Cobrar</button>`;
+    if (!buscando && SEGMENTO === 'leads')
+      return `<button class="btn mini zap" onclick="waEnviar(${x.id},'followup_venda',{})">WhatsApp</button>`;
+    if (!buscando && SEGMENTO === 'inativos')
+      return `<button class="btn mini zap" onclick="waEnviar(${x.id},'pedir_retorno',{})">Reativar</button>`;
+    return `<button class="btn mini" onclick="abrirConsulta(${x.id})">+ Consulta</button>`;
+  };
+
+  $('#tabelaPac').innerHTML = !lista.length
+    ? `<p class="vazio">${buscando ? 'Ninguém encontrado com esse termo.' : 'Nenhum paciente aqui.'}</p>`
     : `<table><thead><tr>
-        <th>Paciente</th><th>Situação</th><th>Objetivo</th><th>Plano</th>
-        <th>Termina</th><th>Última ficha</th><th>Cobrança</th><th></th></tr></thead><tbody>
-      ${pacientes.map((x) => `<tr>
+        <th>Paciente</th><th>Objetivo</th><th>Plano</th><th>${colDestaque}</th>
+        ${buscando ? '<th>Situação</th>' : ''}<th></th></tr></thead><tbody>
+      ${lista.slice(0, 400).map((x) => `<tr>
         <td>${nomeCompleto(x)}<br><small style="color:var(--txt-2)">${esc(x.pais || '')}${x.telefone ? ' · ' + esc(x.telefone) : ''}</small></td>
-        <td><span class="tag ${x.status}">${x.status}</span></td>
         <td><small>${esc(x.objetivo || '—')}</small></td>
         <td>${x.plano_atual ? `<span class="cod">${esc(x.plano_atual)}</span>` : '—'}</td>
-        <td>${dataBR(x.data_final)}</td>
-        <td>${x.ultima_consulta ? dataBR(x.ultima_consulta) : '<small style="color:var(--erro)">nenhuma</small>'}</td>
-        <td>${x.parcelas_abertas ? `<span class="tag devendo">${x.parcelas_abertas} aberta(s)</span>` : '<span class="tag ativo">em dia</span>'}</td>
+        <td>${celDestaque(x)}</td>
+        ${buscando ? `<td><span class="tag ${x.status}">${x.status}</span></td>` : ''}
         <td style="white-space:nowrap">
           <button class="btn mini ghost" onclick="abrirPaciente(${x.id})">Ficha</button>
-          <button class="btn mini" onclick="abrirConsulta(${x.id})">+ Consulta</button>
+          ${acao(x)}
         </td></tr>`).join('')}
-      </tbody></table>`;
+      </tbody></table>
+      ${lista.length > 400 ? `<p class="vazio">Mostrando 400 de ${lista.length}. Use a busca ou os filtros.</p>` : ''}`;
 }
 
 /* ---------- modal genérico ---------- */
@@ -1618,31 +1697,96 @@ function aplicarCustom() {
    PLANOS
    ========================================================== */
 async function telaPlanos() {
-  PLANOS = (await api('/planos')).planos;
+  $('#tela').innerHTML = '<p class="vazio">Carregando…</p>';
+  const [pl, d] = await Promise.all([api('/planos'), api('/planos/desempenho')]);
+  PLANOS = pl.planos;
+
+  const porCod = (lista, campo) => {
+    const o = {};
+    (lista || []).forEach((x) => { o[x.plano] = (o[x.plano] || 0) + Number(x[campo] || 0); });
+    return o;
+  };
+  const ativos = porCod(d.ativos, 'qtd');
+  const vendidos = porCod(d.vendas, 'qtd');
+  const recebido = porCod(d.recebido, 'total_brl');
+  const renov = {};
+  (d.renovacao || []).forEach((r) => { renov[r.plano] = r; });
+
+  const semPreco = PLANOS.filter((p) => p.ativo && !p.preco_brl && !p.preco_usd);
+  const maxRec = Math.max(1, ...Object.values(recebido));
+  const totalRec = Object.values(recebido).reduce((a, b) => a + b, 0);
+  const totalAtivos = Object.values(ativos).reduce((a, b) => a + b, 0);
+
+  // ranking do que realmente traz dinheiro
+  const ranking = [...PLANOS]
+    .map((p) => ({ p, rec: recebido[p.codigo] || 0, at: ativos[p.codigo] || 0, vend: vendidos[p.codigo] || 0 }))
+    .filter((x) => x.rec || x.at || x.vend)
+    .sort((a, b) => b.rec - a.rec);
+
   $('#tela').innerHTML = `
     <div class="topo">
-      <div><h1>Planos</h1><p>Valores e regras de cada plano de consultoria</p></div>
+      <div><h1>Planos</h1><p>O que cada plano cobra, o que entrega e quanto traz</p></div>
       <div class="dir"><button class="btn ouro" onclick="formPlano()">+ Plano</button></div>
     </div>
+
+    ${semPreco.length ? `<div class="card" style="background:#FBF0D6;border-color:#E4C25C;margin-bottom:14px">
+      <b>${semPreco.length} plano${semPreco.length === 1 ? '' : 's'} sem preço:</b>
+      ${semPreco.map((p) => `<span class="cod" style="margin-left:5px">${esc(p.codigo)}</span>`).join('')}
+      <div style="font-size:13px;margin-top:6px">Enquanto o preço não estiver aqui, todo contrato novo
+      exige digitar o valor na mão.</div>
+    </div>` : ''}
+
+    <div class="grid g3" style="margin-bottom:16px">
+      <div class="kpi"><span>Contratos ativos</span><b>${totalAtivos}</b>
+        <small style="color:var(--txt-2)">em ${Object.keys(ativos).length} planos diferentes</small></div>
+      <div class="kpi"><span>Recebido em 12 meses</span><b style="font-size:21px">${money(totalRec, 'BRL')}</b>
+        <small style="color:var(--txt-2)">somando todas as moedas</small></div>
+      <div class="kpi"><span>Plano que mais traz</span>
+        <b style="font-size:21px">${ranking[0] ? esc(ranking[0].p.codigo) : '—'}</b>
+        <small style="color:var(--txt-2)">${ranking[0] ? money(ranking[0].rec, 'BRL') + ' em 12 meses' : 'sem dados ainda'}</small></div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <h3>Quanto cada plano trouxe</h3>
+      <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 12px">
+        Últimos 12 meses, em reais convertidos. É o que separa o plano que vende do plano que fatura.</p>
+      ${!ranking.length ? '<p class="vazio">Nenhum contrato registrado ainda.</p>' :
+        `<div class="viz-barras">${ranking.map((x, i) => `
+          <div class="viz-linha">
+            <span class="viz-rot">${esc(x.p.codigo)}</span>
+            <span class="viz-trilho"><i style="width:${Math.max((x.rec / maxRec) * 100, x.rec ? 1.5 : 0)}%;
+              background:${i === 0 ? '#C9A227' : '#1E4062'}"></i></span>
+            <b class="viz-val">${money(x.rec, 'BRL')}</b>
+          </div>`).join('')}</div>`}
+    </div>
+
     <div class="card" style="padding:0;overflow:auto">
+      <h3 style="padding:16px 16px 4px">Cadastro</h3>
+      <p style="font-size:12.5px;color:var(--txt-2);margin:0;padding:0 16px 10px">
+        O preço entra sozinho no contrato e continua editável caso a caso.</p>
       <table><thead><tr>
-        <th>Código</th><th>Nome</th><th>Tipo</th><th>Duração</th>
-        <th>Preço BRL</th><th>Preço USD</th><th>Consultas</th><th>Follow-up</th><th></th></tr></thead><tbody>
-      ${PLANOS.map((p) => `<tr style="${p.ativo ? '' : 'opacity:.5'}">
-        <td><span class="cod">${esc(p.codigo)}</span></td>
-        <td><b>${esc(p.nome)}</b>${p.regras ? `<br><small style="color:var(--txt-2)">${esc(p.regras.slice(0, 70))}</small>` : ''}</td>
-        <td><small>${{ dieta: 'Dieta', treino: 'Treino', dieta_treino: 'Dieta + Treino', le: 'Low Energy', outro: 'Outro' }[p.tipo] || p.tipo}</small></td>
+        <th>Plano</th><th>Duração</th><th>Preço BR</th><th>Preço EUA</th>
+        <th>Inclui</th><th>Ativos</th><th>Vendidos 12m</th><th>Renovação</th><th></th></tr></thead><tbody>
+      ${PLANOS.map((p) => {
+        const r = renov[p.codigo];
+        const totRen = r ? r.renovou + r.saiu : 0;
+        return `<tr style="${p.ativo ? '' : 'opacity:.5'}">
+        <td><span class="cod">${esc(p.codigo)}</span> <b>${esc(p.nome)}</b>
+          ${p.regras ? `<br><small style="color:var(--txt-2)">${esc(p.regras.slice(0, 64))}</small>` : ''}
+          <br><small style="color:var(--txt-2)">${{ dieta: 'Dieta', treino: 'Treino',
+            dieta_treino: 'Dieta + Treino', le: 'Low Energy', outro: 'Outro' }[p.tipo] || p.tipo}</small></td>
         <td>${p.dias} dias</td>
         <td>${p.preco_brl ? money(p.preco_brl, 'BRL') : '<small style="color:var(--erro)">definir</small>'}</td>
         <td>${p.preco_usd ? money(p.preco_usd, 'USD') : '<small style="color:var(--erro)">definir</small>'}</td>
-        <td>${p.consultas || '—'}</td>
-        <td>${p.follow_up_dias ? 'a cada ' + p.follow_up_dias + 'd' : '—'}</td>
+        <td><small>${p.consultas ? p.consultas + ' consulta' + (p.consultas === 1 ? '' : 's') : '—'}
+          ${p.follow_up_dias ? `<br>follow-up a cada ${p.follow_up_dias}d` : ''}</small></td>
+        <td>${ativos[p.codigo] ? `<b>${ativos[p.codigo]}</b>` : '—'}</td>
+        <td>${vendidos[p.codigo] || '—'}</td>
+        <td>${totRen ? `<b>${Math.round((r.renovou / totRen) * 100)}%</b>
+          <br><small style="color:var(--txt-2)">${r.renovou} de ${totRen}</small>` : '—'}</td>
         <td><button class="btn mini ghost" onclick="formPlano(${p.id})">Editar</button></td>
-      </tr>`).join('')}</tbody></table>
-    </div>
-    <p style="font-size:13px;color:var(--txt-2);margin-top:12px">
-      Os preços em vermelho ainda não foram preenchidos. Ao criar um contrato, o valor do plano
-      entra automaticamente e continua editável caso a caso.</p>`;
+      </tr>`; }).join('')}</tbody></table>
+    </div>`;
 }
 
 function formPlano(id) {
@@ -2130,6 +2274,28 @@ async function telaConfig() {
       </div>
 
       <div class="card">
+        <h3>Formulário de anamnese</h3>
+        <p style="font-size:13px;color:var(--txt-2);margin:6px 0 10px">
+          Substitui os dois Google Forms. Quem preencher entra como lead no funil,
+          com a anamnese já anexada à ficha e um código gerado na hora.
+          A página se adapta sozinha: português ou inglês.</p>
+        <label>Link para mandar ao paciente</label>
+        <input id="linkForm" readonly onclick="this.select()"
+          value="${location.origin}/form" style="font-family:ui-monospace,monospace;font-size:12.5px">
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <button class="btn ghost mini" onclick="navigator.clipboard.writeText(location.origin+'/form');toast('Link copiado')">Copiar link</button>
+          <a class="btn ghost mini" href="/form" target="_blank" style="text-decoration:none">Abrir</a>
+        </div>
+        <div style="margin-top:14px"><label>Título da página</label>
+          <input id="fmTitulo" value="${esc(settings.form_titulo || '')}"></div>
+        <div style="margin-top:10px"><label>Texto de abertura</label>
+          <textarea id="fmIntro">${esc(settings.form_intro || '')}</textarea></div>
+        <div style="margin-top:10px"><label>Mensagem depois de enviar</label>
+          <textarea id="fmObrigado">${esc(settings.form_agradecimento || '')}</textarea></div>
+        <button class="btn ouro" style="margin-top:12px" id="salvarForm">Salvar textos</button>
+      </div>
+
+      <div class="card">
         <h3>Importar dados</h3>
         <p style="font-size:13px;color:var(--txt-2);margin:6px 0 12px">
           Escolha o arquivo JSON da planilha atual ou das respostas do formulário.
@@ -2161,6 +2327,13 @@ async function telaConfig() {
     await api('/settings', { method: 'PUT', body: {
       followup_dias_alerta: $('#sFu').value, vencimento_alerta_dias: $('#sVenc').value } });
     toast('Configurações salvas');
+  };
+
+  $('#salvarForm').onclick = async () => {
+    await api('/settings', { method: 'PUT', body: {
+      form_titulo: $('#fmTitulo').value, form_intro: $('#fmIntro').value,
+      form_agradecimento: $('#fmObrigado').value } });
+    toast('Textos do formulário salvos');
   };
 
   $('#salvarFat').onclick = async () => {

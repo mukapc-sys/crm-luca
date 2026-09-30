@@ -65,13 +65,14 @@ duas bases.
 |---|---|
 | **Início** | O dia do Luca: calls, follow-ups combinados para hoje, cobranças, renovações em aberto, agenda e pacientes sem consulta recente. Cards de taxa de fechamento, recebido no mês contra o anterior, a receber e ativos |
 | **Funil** | Duas esteiras. **Leads novos**: chegou no direct → call agendada → follow-up → fechou/perdido. **Renovações**: criadas sozinhas 30 dias antes do fim do plano → a abordar → abordado → follow-up → renovou/não renovou. Fechar a venda cria o contrato e as parcelas. Perder exige motivo, e os motivos viram relatório |
-| **Pacientes** | Busca por COD, nome ou apelido; filtros de situação, objetivo e país; ficha completa com abas de visão geral, consultas, financeiro e anamnese |
+| **Pacientes** | Separado pelo que exige ação: em acompanhamento, renovação chegando, devendo, leads e inativos. A coluna de destaque e o botão de ação mudam com o segmento. Busca por COD, nome ou apelido atravessa a base inteira |
 | **Ficha de consulta** | O caderno do Luca em tela: COD, data, peso em kg **e** lbs (um calcula o outro), treino, as 5 refeições, ceia e observações; mostra a variação desde a última medição; imprime no mesmo formato |
 | **Agenda** | Calendário mensal; dois cliques num dia criam o compromisso; consultas, follow-ups, cobranças e compromissos pessoais |
 | **Financeiro** | Filtro de período (hoje, esta semana, este mês, últimos 30 dias, personalizado). Recebido no período comparado ao anterior, entradas, a receber e vencido. Gráficos de entradas por dia ou mês, por forma de pagamento, por plano e por país, mais a tendência dos últimos 18 meses e a tabela dos mesmos números |
 | **Calculadora** | TMB e gasto energético total por Harris-Benedict, as mesmas constantes da planilha. Abre da ficha do paciente já preenchida com sexo, idade, altura e o peso da última consulta. Mostra faixas de déficit e superávit. Fatores de atividade editáveis em Configurações |
 | **WhatsApp** | Conexão com a Evolution API (QR na tela), modelos de mensagem com variáveis, fila do que vai sair com edição e cancelamento, e histórico. Automáticas saem no fuso do paciente; de um clique saem dos botões do sistema |
-| **Planos** | Cadastro com código, duração, preço BRL e USD, consultas incluídas, cadência de follow-up e regras |
+| **Planos** | Além do cadastro: contratos ativos, vendidos e recebido nos últimos 12 meses por plano, taxa de renovação e aviso dos planos sem preço |
+| **Formulário público** | Página em `/form`, português e inglês, com os campos da anamnese do Luca. Quem preenche vira lead no funil, com anamnese anexada, código gerado, peso virando a primeira ficha de consulta e conversores kg↔lb e cm↔pés |
 
 ## Regras que vieram da planilha
 
@@ -101,15 +102,34 @@ No console do D1, na ordem:
 1. `migrate-01.sql` — tabelas do funil
 2. `migrate-02.sql` — sexo e altura do paciente, fatores de atividade
 3. `migrate-03.sql` — WhatsApp: modelos, fila e fuso do paciente
+4. `migrate-04.sql` — textos do formulário público
 
 Instalação nova não precisa de nenhum: o `schema.sql` já vem completo.
+
+## Credenciais da Evolution
+
+Ficam em **variáveis de ambiente do Pages**, não no banco. Cloudflare →
+projeto Pages → Settings → Variables and Secrets → Production, cada uma
+marcada como **Secret**:
+
+| Variável | O que é |
+|---|---|
+| `EVOLUTION_URL` | endereço do servidor, sem barra no fim |
+| `EVOLUTION_APIKEY` | a apikey |
+| `EVOLUTION_INSTANCIA` | nome da instância |
+| `CRON_TOKEN` | senha do disparador (invente uma frase longa) |
+
+Variável só passa a valer no **deploy seguinte**. O que estiver em variável
+manda; os campos da tela ficam bloqueados e o banco vira só reserva para
+quem ainda não migrou.
 
 ## Disparador do WhatsApp
 
 O Pages não tem agendador. Para as mensagens automáticas saírem:
 
-1. Tela **WhatsApp → Conexão e automações**: preencha a Evolution, salve,
-   ligue o envio automático e copie o **token do disparador**
+1. Tela **WhatsApp → Conexão e automações**: confira que a Evolution
+   aparece vindo das variáveis, ligue o envio automático e copie o
+   **token do disparador**
 2. Cloudflare → Workers → Create → cole o conteúdo de `worker-cron/index.js`
 3. Troque `CRM` pela URL do Pages e `TOKEN` pelo token copiado
 4. No Worker: Settings → Triggers → Cron Triggers → `*/15 * * * *`
@@ -121,9 +141,22 @@ tela), respeitando a janela configurada. Se o horário já passou há menos de
 3 horas, sai no ciclo seguinte; passou de 3 horas, o evento perdeu a hora e
 não envia — ninguém recebe "bom dia" às 19h.
 
+## Formulário público
+
+O link é `<sua-url>/form`. Substitui os dois Google Forms: um endereço só,
+que se adapta ao idioma do navegador e pode ser trocado no topo da página.
+
+Quem preenche entra como **lead** no funil, etapa "chegou no direct", com
+origem "Formulário". O código do paciente é gerado na sequência do maior
+número já existente. Se a pessoa já estiver na base (mesmo e-mail ou mesmo
+nome), a ficha é reaproveitada e a anamnese nova entra ao lado da antiga —
+sem paciente duplicado e sem segunda negociação aberta.
+
+Título, texto de abertura e mensagem de agradecimento saem de
+Configurações. São em português: em inglês a página usa os textos padrão.
+
 ## Ainda não entra nesta fase
 
-- Formulário público novo integrado (F2)
 - Portal do paciente
 - Disparo automático de WhatsApp (hoje o botão abre a conversa com a
   mensagem pronta)
