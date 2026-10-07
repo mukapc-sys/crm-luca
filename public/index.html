@@ -144,9 +144,141 @@ tbody tr:hover{background:#FAFCFE}
 .viz-trilho{height:12px;background:#EEF2F7;border-radius:4px;overflow:hidden}
 .viz-trilho i{display:block;height:100%;border-radius:0 4px 4px 0}
 .viz-val{font-size:12.5px;font-weight:650;white-space:nowrap}
+.relogios .viz-linha{grid-template-columns:minmax(150px,42%) 1fr auto}
 @media(max-width:620px){
   .viz-linha{grid-template-columns:1fr auto;gap:4px 10px}
   .viz-trilho{grid-column:1/-1}
+}
+
+
+/* ---------- refeições e TMB na ficha ---------- */
+.refeicao .rot .refNome{font-size:12.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  color:var(--navy);border:0;border-left:3px solid var(--ouro);border-radius:0;padding:2px 8px;
+  background:none;flex:1;min-width:0}
+.refeicao .rot .refNome:focus{outline:2px solid var(--navy-3);outline-offset:1px;border-radius:5px}
+.refeicao .rot .refHora{width:112px;flex:none}
+.refeicao .rot .refTirar{flex:none;color:var(--txt-2);padding:4px 9px;line-height:1}
+.refeicao .rot .refTirar:hover{color:var(--erro);border-color:var(--erro)}
+.kpi-tmb{display:grid;grid-template-columns:1fr 1fr;gap:12px;background:#F6F8FB;
+  border:1px solid var(--linha);border-radius:10px;padding:13px 15px}
+.kpi-tmb > div span{display:block;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--txt-2);font-weight:700;margin-bottom:3px}
+.kpi-tmb > div b{font-size:21px;letter-spacing:-.02em}
+.kpi-tmb .obs{grid-column:1/-1;font-size:12.5px;color:var(--txt-2);border-top:1px solid var(--linha);
+  padding-top:9px}
+.kpi-tmb .obs span{text-transform:none;letter-spacing:0;font-weight:400;font-size:12.5px;color:var(--txt-2)}
+.kpi-tmb .obs b{font-size:12.5px;color:var(--txt)}
+.kpi-tmb.incompleto{background:#FDF6E6;border-color:#E6D6A8}
+
+/* ---------- cabeçalho do InBody na ficha ---------- */
+.inbody-cab{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;background:#F6F8FB;
+  border:1px solid var(--linha);border-radius:10px;padding:12px 14px}
+.inbody-cab label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt-2);
+  font-weight:700;margin:0 0 2px}
+.inbody-cab > div > div{font-size:14px;font-weight:600}
+@media(max-width:700px){.inbody-cab{grid-template-columns:repeat(2,1fr)}.kpi-tmb{grid-template-columns:1fr}}
+
+/* ---------- post-it flutuante ---------- */
+#postit{position:fixed;right:20px;bottom:20px;width:300px;z-index:80;background:#FFF8D6;
+  border:1px solid #E8D98A;border-radius:12px;box-shadow:0 14px 36px rgba(16,36,56,.22);
+  display:flex;flex-direction:column;overflow:hidden;transition:width .18s,height .18s}
+#postit .pi-cab{display:flex;align-items:center;gap:8px;padding:9px 12px;background:#F7EDB8;
+  border-bottom:1px solid #E8D98A;cursor:pointer;user-select:none}
+#postit .pi-cab b{font-size:13px;color:#6B5A10;flex:1}
+#postit .pi-cab small{font-size:11.5px;color:#8A7620}
+#postit .pi-cab button{background:none;border:0;font-size:15px;line-height:1;color:#6B5A10;padding:2px 5px;
+  border-radius:5px}
+#postit .pi-cab button:hover{background:rgba(0,0,0,.07)}
+#postit textarea{border:0;background:none;border-radius:0;resize:vertical;min-height:150px;
+  font-size:14px;line-height:1.55;color:#3D3306;padding:11px 12px}
+#postit textarea:focus{outline:0}
+#postit .pi-pe{display:flex;align-items:center;gap:8px;padding:8px 10px;border-top:1px solid #E8D98A}
+#postit .pi-pe small{flex:1;font-size:11.5px;color:#8A7620}
+#postit .pi-pe .btn{background:#6B5A10;color:#fff;padding:6px 13px;font-size:12.5px}
+#postit.min{width:auto}
+#postit.min textarea,#postit.min .pi-pe{display:none}
+#postit.min .pi-cab{border-bottom:0}
+#postit.cheio.min .pi-cab{background:var(--ouro)}
+body.apresentando #postit{display:none}
+@media(max-width:860px){#postit{right:10px;bottom:10px;width:min(300px,calc(100vw - 20px))}}
+@media print{#postit{display:none}}
+
+/* ---------- InBody: a tela que ele vira para o paciente ---------- */
+body.apresentando{overflow:hidden}
+.ib-show{position:fixed;inset:0;z-index:200;background:rgba(10,22,36,.82);
+  backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);
+  display:grid;place-items:center;overflow:auto;padding:clamp(10px,2vh,24px) 18px;
+  opacity:0;transition:opacity .26s ease}
+.ib-show.entrou{opacity:1}
+.ib-sair{position:fixed;top:16px;right:18px;z-index:3;background:rgba(255,255,255,.14);color:#fff;
+  border:0;width:40px;height:40px;border-radius:50%;font-size:17px;line-height:1}
+.ib-sair:hover{background:rgba(255,255,255,.28)}
+.ib-pagina{width:min(1280px,100%);background:#fff;border-radius:14px;overflow:hidden;
+  box-shadow:0 30px 90px rgba(0,0,0,.5);transform:scale(.965) translateY(14px);
+  transition:transform .32s cubic-bezier(.2,.8,.25,1)}
+.ib-show.entrou .ib-pagina{transform:none}
+.ib-topo{display:flex;align-items:center;justify-content:space-between;
+  background:linear-gradient(135deg,#17355A,#0B1B2C);padding:16px 26px}
+.ib-marca{display:flex;align-items:center;gap:11px;color:#fff;letter-spacing:.16em;
+  font-size:16px;font-weight:600}
+.ib-marca i{color:var(--ouro);font-style:normal;margin:0 2px}
+.ib-selo{font-size:30px;font-weight:800;letter-spacing:-.02em;color:#fff}
+.ib-selo::first-letter{color:#E8A0B4}
+.ib-faixa{height:7px;background:linear-gradient(90deg,#C9A227,#9C7C14)}
+.ib-cab{display:grid;grid-template-columns:1.8fr repeat(7,1fr);gap:1px;background:var(--linha);
+  border-bottom:1px solid var(--linha)}
+.ib-cab > div{background:#fff;padding:11px 14px;min-width:0}
+.ib-cab label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--txt-2);font-weight:700;margin-bottom:3px}
+.ib-cab b{font-size:14.5px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ib-corpo{padding:10px 26px 4px}
+.ib-linha,.ib-datas{display:grid;grid-template-columns:230px 1fr 300px;gap:18px;align-items:center;
+  padding:clamp(5px,1.1vh,12px) 0;border-bottom:1px solid var(--linha);
+  opacity:0;transform:translateY(16px);animation:ibSobe .5s ease forwards;animation-delay:var(--atraso)}
+.ib-datas{border-bottom:0;padding-top:0;align-items:start}
+@keyframes ibSobe{to{opacity:1;transform:none}}
+.ib-rot h3{font-size:15px;margin:0 0 4px;line-height:1.3}
+.ib-rot h3 span{font-weight:500;color:var(--txt-2)}
+.ib-agora{font-size:clamp(22px,2.9vh,30px);font-weight:750;letter-spacing:-.025em;
+  line-height:1.05;color:var(--navy)}
+.ib-agora i{font-style:normal;font-size:14px;font-weight:600;color:var(--txt-2);margin-left:3px}
+.ib-delta{font-size:13.5px;font-weight:700;margin-top:3px}
+.ib-delta small{display:block;font-weight:500;font-size:11.5px;color:var(--txt-2)}
+.ib-grafico{min-width:0}
+.ib-grafico svg{width:100%;height:clamp(72px,11.2vh,132px);display:block;overflow:visible}
+.ib-traco{stroke-dasharray:2400;stroke-dashoffset:2400;animation:ibrisca 1.5s ease forwards;
+  animation-delay:calc(var(--atraso) + .18s)}
+@keyframes ibrisca{to{stroke-dashoffset:0}}
+.ib-ponto{opacity:0;animation:ibPonto .3s ease forwards;
+  animation-delay:calc(var(--atraso) + .4s + var(--n) * .11s)}
+@keyframes ibPonto{from{opacity:0;transform:scale(.3)}to{opacity:1;transform:none}}
+.ib-ponto{transform-box:fill-box;transform-origin:center}
+.ib-valor{opacity:0;animation:ibSobe .4s ease forwards;animation-delay:calc(var(--atraso) + 1.1s)}
+.ib-texto{font-size:12.5px;line-height:1.5;color:var(--txt)}
+.ib-texto b{display:block;font-size:13px;margin-bottom:2px}
+.ib-texto p{margin:0;color:var(--txt-2)}
+.ib-eixo{position:relative;height:30px;border-top:2px solid var(--linha);margin-top:2px}
+.ib-eixo span{position:absolute;top:6px;transform:translateX(-50%);white-space:nowrap;
+  font-size:11.5px;font-weight:650;color:var(--txt-2)}
+.ib-eixo span:first-child{transform:none}
+.ib-eixo span:last-child{transform:translateX(-100%)}
+.ib-rodape{background:#F6F8FB;border-top:1px solid var(--linha);padding:13px 26px;
+  font-size:11.5px;color:var(--txt-2);text-align:center}
+@media(max-width:1100px){
+  .ib-cab{grid-template-columns:repeat(4,1fr)}
+  .ib-linha,.ib-datas{grid-template-columns:180px 1fr;gap:12px}
+  .ib-texto{grid-column:1/-1;border-top:1px dashed var(--linha);padding-top:8px}
+  .ib-datas .ib-texto{display:none}
+}
+@media(max-width:640px){
+  .ib-cab{grid-template-columns:repeat(2,1fr)}
+  .ib-linha,.ib-datas{grid-template-columns:1fr}
+  .ib-corpo{padding:6px 16px}
+}
+@media(prefers-reduced-motion:reduce){
+  .ib-linha,.ib-datas,.ib-ponto,.ib-valor{animation:none;opacity:1;transform:none}
+  .ib-traco{animation:none;stroke-dashoffset:0}
+  .ib-pagina,.ib-show{transition:none}
 }
 
 #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(90px);
@@ -216,11 +348,25 @@ tbody tr:hover{background:#FAFCFE}
       <button data-tela="financeiro">Financeiro</button>
       <button data-tela="whatsapp">WhatsApp <span class="bd hide" id="bdWa"></span></button>
       <button data-tela="planos">Planos</button>
+      <button data-tela="conversores">Conversores</button>
       <button data-tela="config">Configurações</button>
     </nav>
     <button class="btn ghost mini" id="btnSair" style="margin-top:14px;width:100%">Sair</button>
   </aside>
   <main id="tela"></main>
+</div>
+
+<div id="postit" class="hide">
+  <div class="pi-cab" id="piCabecalho">
+    <b>Bloco de notas</b>
+    <small id="piContador">vazio</small>
+    <button type="button" id="piMin" title="Minimizar / abrir">▾</button>
+  </div>
+  <textarea id="piTexto" placeholder="anote aqui o que não pode esquecer — fica em todas as telas"></textarea>
+  <div class="pi-pe">
+    <small id="piEstado"></small>
+    <button type="button" class="btn" id="piOk">Concluir</button>
+  </div>
 </div>
 
 <div id="toast"></div>

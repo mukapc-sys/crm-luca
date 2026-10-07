@@ -58,6 +58,8 @@ const num = (v) => {
   const n = Number(String(v).replace(/[^\d.,-]/g, '').replace(/\.(?=\d{3}\b)/g, '').replace(',', '.'));
   return isNaN(n) ? 0 : n;
 };
+// medição em branco é "não medi", não zero: zero afundaria o gráfico
+const numOuNulo = (v) => (v === null || v === undefined || v === '' ? null : num(v));
 const SIMBOLO = { BRL: 'R$', USD: 'US$', GBP: '£', EUR: '€' };
 const dataBR = (d) => (!d ? '' : String(d).slice(0, 10).split('-').reverse().join('/'));
 const MOEDA_POR_FORMA = { pix: 'BRL', asaas: 'BRL', infinity: 'BRL', zelle: 'USD', paypal: 'USD' };
@@ -183,6 +185,52 @@ async function mapaFusos(env) {
 }
 const fusoDe = (pac, mapa) => pac.fuso || mapa[pac.pais] || 'America/Sao_Paulo';
 
+// Cidade vira fuso: é o que conserta o paciente da Califórnia receber às 6h.
+// Acentos e hífens saem da conta, "São Paulo - SP" acha "sao paulo".
+function chaveLugar(s) {
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[-.,/]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+async function fusoDoLugar(env, cidade, pais) {
+  const k = chaveLugar(cidade);
+  if (!k) return null;
+  const tenta = async (chave) => (await env.DB.prepare(
+    'SELECT fuso FROM fusos_lugar WHERE chave=? LIMIT 1').bind(chave).first())?.fuso || null;
+  let f = await tenta(k);
+  if (f) return f;
+  // "Austin, TX" ou "Miami FL": tenta cada pedaço, do mais específico ao estado
+  const partes = k.split(' ').filter(Boolean);
+  for (let n = partes.length; n >= 1 && !f; n--) {
+    for (let i = 0; i + n <= partes.length && !f; i++) {
+      const t = partes.slice(i, i + n).join(' ');
+      if (t !== k) f = await tenta(t);
+    }
+  }
+  if (f) return f;
+  if (pais) {
+    const mapa = await mapaFusos(env);
+    if (mapa[pais]) return mapa[pais];
+  }
+  return null;
+}
+
+// token do link de anamnese: só o Luca gera, e vale para um paciente só
+const novoToken = () => crypto.randomUUID().replace(/-/g, '').slice(0, 24);
+
+// o formulário tem domínio próprio; sem ele configurado, usa o do CRM
+async function baseFormulario(env, url) {
+  const v = (await env.DB.prepare("SELECT value FROM settings WHERE key='form_dominio'").first())?.value;
+  const base = String(v || '').trim().replace(/\/+$/, '');
+  if (base) return /^https?:\/\//.test(base) ? base : 'https://' + base;
+  return url.origin + '/form';
+}
+
+async function idiomasForm(env) {
+  const v = (await env.DB.prepare("SELECT value FROM settings WHERE key='form_idiomas'").first())?.value;
+  const l = String(v || 'pt,en,es').split(',').map((s) => s.trim()).filter(Boolean);
+  return l.length ? l : ['pt'];
+}
+
 // Credencial mora nas variáveis de ambiente do Pages, não no banco: um dump
 // do D1 não vaza a chave. O que estiver no banco só vale se a variável faltar.
 async function waConfig(env) {
@@ -223,6 +271,7 @@ function montarTexto(corpo, ctx) {
     hora_call: ctx.hora_call || '',
     data_fim: ctx.data_fim || '',
     dias: ctx.dias != null ? String(ctx.dias) : '',
+    link_anamnese: ctx.link_anamnese || '',
   };
   return String(corpo || '').replace(/\{(\w+)\}/g, (m, k) => (k in v ? v[k] : m));
 }
@@ -384,8 +433,10 @@ export async function onRequest(context) {
   if (metodo === 'OPTIONS') return new Response(null, { status: 204 });
   if (!env.DB) return bad('Banco D1 não conectado (binding "DB").', 500);
 
+  // upload de arquivo chega como multipart: o corpo é lido na própria rota
+  const ehUpload = (request.headers.get('content-type') || '').includes('multipart/form-data');
   let body = {};
-  if (['POST', 'PUT', 'PATCH'].includes(metodo)) {
+  if (!ehUpload && ['POST', 'PUT', 'PATCH'].includes(metodo)) {
     try { body = await request.json(); } catch { body = {}; }
   }
 
@@ -428,9 +479,30 @@ export async function onRequest(context) {
         `SELECT codigo, nome, dias, preco_brl, preco_usd FROM planos
           WHERE ativo=1 ORDER BY posicao, codigo`).all();
       const st = await env.DB.prepare(
-        "SELECT key,value FROM settings WHERE key IN ('form_titulo','form_intro','form_agradecimento')").all();
+        "SELECT key,value FROM settings WHERE key LIKE 'form_%'").all();
       const o = {}; (st.results || []).forEach((x) => { o[x.key] = x.value; });
-      return json({ planos: r.results || [], textos: o });
+      const blocos = await env.DB.prepare(
+        'SELECT * FROM form_blocos WHERE ativo=1 ORDER BY posicao, id').all();
+      const campos = await env.DB.prepare(
+        'SELECT * FROM form_campos WHERE ativo=1 ORDER BY posicao, id').all();
+      const objs = await env.DB.prepare(
+        'SELECT nome, nome_en, nome_es FROM objetivos WHERE ativo=1 ORDER BY posicao, id').all();
+
+      // link com token: já sei quem é, o formulário cumprimenta pelo nome
+      let convidado = null;
+      const t = (url.searchParams.get('t') || '').trim();
+      if (t) {
+        const p = await env.DB.prepare(
+          'SELECT nome, email, telefone, pais, cidade FROM pacientes WHERE form_token=? LIMIT 1')
+          .bind(t).first();
+        if (p) convidado = p;
+      }
+      return json({
+        planos: r.results || [], textos: o,
+        idiomas: await idiomasForm(env),
+        blocos: blocos.results || [], campos: campos.results || [],
+        objetivos: objs.results || [], convidado,
+      });
     }
 
     if (rota === '/publico/anamnese' && metodo === 'POST') {
@@ -446,11 +518,21 @@ export async function onRequest(context) {
       if (!telefone || telefone.replace(/\D/g, '').length < 8) return bad('Informe um telefone válido.');
 
       const respostas = (b.respostas && typeof b.respostas === 'object') ? b.respostas : {};
-      const idioma = b.idioma === 'en' ? 'US' : 'BR';
+      const IDI = { pt: 'BR', en: 'US', es: 'ES' };
+      const idioma = IDI[b.idioma] || 'BR';
       const pais = String(b.pais || (idioma === 'US' ? 'US' : 'Brasil')).trim();
+      const cidade = String(b.cidade || '').trim();
+      const fuso = await fusoDoLugar(env, cidade, pais);
+      const sexo = b.sexo === 'M' || /^m/i.test(b.sexo || '') ? 'M'
+        : b.sexo === 'F' || /^(f|mu)/i.test(b.sexo || '') ? 'F' : null;
 
-      // reaproveita a ficha se a pessoa já existe; senão cria com código novo
-      let pac = await env.DB.prepare(
+      // link com token manda direto para a ficha certa, sem adivinhar quem é;
+      // sem token, reaproveita por e-mail ou nome e só então cria ficha nova
+      let pac = null;
+      const tok = String(b.token || '').trim();
+      if (tok) pac = await env.DB.prepare(
+        'SELECT * FROM pacientes WHERE form_token=? LIMIT 1').bind(tok).first();
+      if (!pac) pac = await env.DB.prepare(
         'SELECT * FROM pacientes WHERE lower(trim(email))=lower(trim(?)) LIMIT 1').bind(email).first();
       if (!pac) pac = await env.DB.prepare(
         'SELECT * FROM pacientes WHERE lower(trim(nome))=lower(trim(?)) LIMIT 1').bind(nome).first();
@@ -461,23 +543,29 @@ export async function onRequest(context) {
         await env.DB.prepare(
           `UPDATE pacientes SET email=COALESCE(NULLIF(?,''),email),
                telefone=COALESCE(NULLIF(?,''),telefone), pais=COALESCE(NULLIF(?,''),pais),
+               cidade=COALESCE(NULLIF(?,''),cidade), fuso=COALESCE(NULLIF(?,''),fuso),
                instagram=COALESCE(NULLIF(?,''),instagram), nascimento=COALESCE(NULLIF(?,''),nascimento),
                objetivo=COALESCE(NULLIF(?,''),objetivo), altura_cm=COALESCE(?,altura_cm),
+               sexo=COALESCE(NULLIF(?,''),sexo), profissao=COALESCE(NULLIF(?,''),profissao),
                updated_at=datetime('now') WHERE id=?`
-        ).bind(email, telefone, pais, b.instagram || '', b.nascimento || '',
-          b.objetivo || '', b.altura_cm ? num(b.altura_cm) : null, pid).run();
+        ).bind(email, telefone, pais, cidade, fuso || '', b.instagram || '', b.nascimento || '',
+          b.objetivo || '', b.altura_cm ? num(b.altura_cm) : null, sexo || '', b.profissao || '', pid).run();
       } else {
         const maior = await env.DB.prepare(
           "SELECT MAX(CAST(cod AS INTEGER)) m FROM pacientes WHERE cod GLOB '[0-9]*'").first();
         cod = String((Number(maior && maior.m) || 0) + 1);
         const r = await env.DB.prepare(
-          `INSERT INTO pacientes (cod,nome,pais,email,telefone,instagram,nascimento,objetivo,
-               altura_cm,status,indicacao)
-           VALUES (?,?,?,?,?,?,?,?,?, 'lead', ?)`
-        ).bind(cod, nome, pais, email, telefone, b.instagram || null, b.nascimento || null,
-          b.objetivo || null, b.altura_cm ? num(b.altura_cm) : null, b.indicacao || null).run();
+          `INSERT INTO pacientes (cod,nome,pais,cidade,fuso,email,telefone,instagram,nascimento,objetivo,
+               altura_cm,sexo,profissao,status,indicacao)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'lead', ?)`
+        ).bind(cod, nome, pais, cidade || null, fuso, email, telefone, b.instagram || null,
+          b.nascimento || null, b.objetivo || null, b.altura_cm ? num(b.altura_cm) : null,
+          sexo, b.profissao || null, b.indicacao || null).run();
         pid = r.meta.last_row_id;
       }
+      // token é de uso único: respondeu, queima
+      if (tok) await env.DB.prepare(
+        'UPDATE pacientes SET form_token=NULL WHERE form_token=?').bind(tok).run();
 
       await env.DB.prepare(
         `INSERT INTO anamneses (paciente_id,cod,nome,email,telefone,respondido_em,origem,dados)
@@ -494,8 +582,11 @@ export async function onRequest(context) {
           'peso informado no formulário de anamnese').run();
       }
 
+      // quem já é cliente só está preenchendo a anamnese: não vira lead de novo
+      const jaCliente = await env.DB.prepare(
+        `SELECT id FROM contratos WHERE paciente_id=? AND status='ativo' LIMIT 1`).bind(pid).first();
       // entra no funil se ainda não houver negociação aberta
-      const aberta = await env.DB.prepare(
+      const aberta = jaCliente || await env.DB.prepare(
         `SELECT id FROM negociacoes WHERE paciente_id=? AND tipo='novo'
             AND etapa NOT IN ('fechou','perdido') LIMIT 1`).bind(pid).first();
       if (!aberta) {
@@ -915,6 +1006,220 @@ export async function onRequest(context) {
     }
 
     // ==========================================================
+    // INBODY — a planilha de medições e a tela de apresentação
+    // ==========================================================
+    if (rota === '/inbody' && metodo === 'GET') {
+      const pid = url.searchParams.get('paciente_id');
+      if (!pid) return bad('Informe o paciente.');
+      const p = await env.DB.prepare('SELECT * FROM pacientes WHERE id=?').bind(pid).first();
+      if (!p) return bad('Paciente não encontrado.', 404);
+      const r = await env.DB.prepare(
+        'SELECT * FROM inbody WHERE paciente_id=? ORDER BY data ASC, hora ASC, id ASC').bind(pid).all();
+      const medicoes = r.results || [];
+      const st = await env.DB.prepare(
+        "SELECT key,value FROM settings WHERE key LIKE 'inbody_%'").all();
+      const cfg = {}; (st.results || []).forEach((x) => { cfg[x.key] = x.value; });
+      // o cabeçalho da planilha: peso e data iniciais são a primeira medição
+      const contrato = await env.DB.prepare(
+        `SELECT c.codigo_plano, pl.nome plano_nome FROM contratos c
+            LEFT JOIN planos pl ON pl.codigo=c.codigo_plano
+          WHERE c.paciente_id=? AND c.status='ativo' ORDER BY c.id DESC LIMIT 1`).bind(pid).first();
+      return json({
+        paciente: p, medicoes, config: cfg,
+        cabecalho: {
+          id_nome: `${p.cod || ''}${p.cod ? '- ' : ''}${p.nome}`,
+          altura_cm: p.altura_cm, sexo: p.sexo, nascimento: p.nascimento,
+          peso_inicial: medicoes.length ? medicoes[0].peso : null,
+          data_inicial: medicoes.length ? medicoes[0].data : null,
+          data_ultima: medicoes.length ? medicoes[medicoes.length - 1].data : null,
+          plano: p.inbody_plano || (contrato ? (contrato.plano_nome || contrato.codigo_plano) : ''),
+          modelo: p.inbody_modelo || cfg.inbody_modelo || 'H30',
+        },
+      });
+    }
+    if (rota === '/inbody' && metodo === 'POST') {
+      const b = body;
+      if (!b.paciente_id) return bad('Informe o paciente.');
+      if (!b.data) return bad('Informe a data da medição.');
+      const r = await env.DB.prepare(
+        `INSERT INTO inbody (paciente_id,data,hora,peso,massa_muscular,gordura_kg,
+             gordura_pct,gordura_visceral,obs)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      ).bind(b.paciente_id, b.data, b.hora || null, numOuNulo(b.peso), numOuNulo(b.massa_muscular),
+        numOuNulo(b.gordura_kg), numOuNulo(b.gordura_pct), numOuNulo(b.gordura_visceral),
+        b.obs || null).run();
+      // primeira medição liga o InBody na ficha sozinha
+      await env.DB.prepare('UPDATE pacientes SET inbody_ativo=1 WHERE id=?').bind(b.paciente_id).run();
+      return json({ ok: true, id: r.meta.last_row_id });
+    }
+    if (rota.startsWith('/inbody/') && seg.length === 2 && seg[1] !== 'config' && metodo === 'PUT') {
+      const b = body;
+      await env.DB.prepare(
+        `UPDATE inbody SET data=?,hora=?,peso=?,massa_muscular=?,gordura_kg=?,
+            gordura_pct=?,gordura_visceral=?,obs=? WHERE id=?`
+      ).bind(b.data, b.hora || null, numOuNulo(b.peso), numOuNulo(b.massa_muscular),
+        numOuNulo(b.gordura_kg), numOuNulo(b.gordura_pct), numOuNulo(b.gordura_visceral),
+        b.obs || null, seg[1]).run();
+      return json({ ok: true });
+    }
+    if (rota.startsWith('/inbody/') && seg.length === 2 && seg[1] !== 'config' && metodo === 'DELETE') {
+      await env.DB.prepare('DELETE FROM inbody WHERE id=?').bind(seg[1]).run();
+      return json({ ok: true });
+    }
+    // liga/desliga o InBody e ajusta modelo e plano do cabeçalho
+    if (rota === '/inbody/config' && metodo === 'PUT') {
+      const b = body;
+      if (!b.paciente_id) return bad('Informe o paciente.');
+      await env.DB.prepare(
+        'UPDATE pacientes SET inbody_ativo=?, inbody_modelo=?, inbody_plano=? WHERE id=?')
+        .bind(b.inbody_ativo ? 1 : 0, b.inbody_modelo || null, b.inbody_plano || null, b.paciente_id).run();
+      return json({ ok: true });
+    }
+
+    // ==========================================================
+    // OBJETIVOS — a lista que alimenta cadastro, ficha e formulário
+    // ==========================================================
+    if (rota === '/objetivos' && metodo === 'GET') {
+      const r = await env.DB.prepare(
+        'SELECT * FROM objetivos ORDER BY posicao, id').all();
+      return json({ objetivos: r.results || [] });
+    }
+    if (rota === '/objetivos' && metodo === 'POST') {
+      const nome = String(body.nome || '').trim();
+      if (!nome) return bad('Informe o nome do objetivo.');
+      const existe = await env.DB.prepare(
+        'SELECT id FROM objetivos WHERE lower(nome)=lower(?)').bind(nome).first();
+      if (existe) return bad('Já existe um objetivo com esse nome.');
+      const m = await env.DB.prepare('SELECT MAX(posicao) p FROM objetivos').first();
+      const r = await env.DB.prepare(
+        'INSERT INTO objetivos (nome,nome_en,nome_es,posicao) VALUES (?,?,?,?)')
+        .bind(nome, body.nome_en || null, body.nome_es || null, (Number(m && m.p) || 0) + 1).run();
+      return json({ ok: true, id: r.meta.last_row_id });
+    }
+    if (rota.startsWith('/objetivos/') && metodo === 'PUT') {
+      const id = seg[1];
+      const atual = await env.DB.prepare('SELECT * FROM objetivos WHERE id=?').bind(id).first();
+      if (!atual) return bad('Objetivo não encontrado.', 404);
+      const nome = String(body.nome || '').trim();
+      if (!nome) return bad('Informe o nome do objetivo.');
+      await env.DB.prepare(
+        'UPDATE objetivos SET nome=?,nome_en=?,nome_es=?,ativo=?,posicao=? WHERE id=?')
+        .bind(nome, body.nome_en || null, body.nome_es || null,
+          body.ativo === 0 || body.ativo === false ? 0 : 1,
+          body.posicao == null ? atual.posicao : Number(body.posicao), id).run();
+      // renomear o objetivo não pode deixar os pacientes apontando para o nome velho
+      if (nome !== atual.nome) {
+        await env.DB.prepare('UPDATE pacientes SET objetivo=? WHERE objetivo=?').bind(nome, atual.nome).run();
+        await env.DB.prepare('UPDATE consultas SET objetivo=? WHERE objetivo=?').bind(nome, atual.nome).run();
+      }
+      return json({ ok: true });
+    }
+    if (rota.startsWith('/objetivos/') && metodo === 'DELETE') {
+      const alvo = await env.DB.prepare('SELECT * FROM objetivos WHERE id=?').bind(seg[1]).first();
+      if (!alvo) return bad('Objetivo não encontrado.', 404);
+      const uso = await env.DB.prepare(
+        "SELECT COUNT(*) c FROM pacientes WHERE objetivo LIKE '%'||?||'%'").bind(alvo.nome).first();
+      // em uso vira inativo: some das listas novas sem sumir das fichas antigas
+      if (uso && uso.c > 0) {
+        await env.DB.prepare('UPDATE objetivos SET ativo=0 WHERE id=?').bind(seg[1]).run();
+        return json({ ok: true, desativado: true, pacientes: uso.c });
+      }
+      await env.DB.prepare('DELETE FROM objetivos WHERE id=?').bind(seg[1]).run();
+      return json({ ok: true });
+    }
+
+    // ==========================================================
+    // FORMULÁRIO DE ANAMNESE — perguntas editáveis em 3 idiomas
+    // ==========================================================
+    if (rota === '/form/campos' && metodo === 'GET') {
+      const blocos = await env.DB.prepare('SELECT * FROM form_blocos ORDER BY posicao, id').all();
+      const campos = await env.DB.prepare('SELECT * FROM form_campos ORDER BY posicao, id').all();
+      return json({
+        blocos: blocos.results || [], campos: campos.results || [],
+        idiomas: await idiomasForm(env),
+      });
+    }
+    if (rota === '/form/campos' && metodo === 'PUT') {
+      const campos = Array.isArray(body.campos) ? body.campos : [];
+      const blocos = Array.isArray(body.blocos) ? body.blocos : [];
+      for (const b of blocos) {
+        if (!b.chave) continue;
+        await env.DB.prepare(
+          `UPDATE form_blocos SET titulo_pt=?,titulo_en=?,titulo_es=?,
+             ajuda_pt=?,ajuda_en=?,ajuda_es=?,ativo=?,posicao=? WHERE chave=?`)
+          .bind(b.titulo_pt || '', b.titulo_en || '', b.titulo_es || '',
+            b.ajuda_pt || '', b.ajuda_en || '', b.ajuda_es || '',
+            b.ativo ? 1 : 0, Number(b.posicao) || 0, b.chave).run();
+      }
+      for (const c of campos) {
+        if (!c.chave) continue;
+        await env.DB.prepare(
+          `UPDATE form_campos SET rot_pt=?,rot_en=?,rot_es=?,dica_pt=?,dica_en=?,dica_es=?,
+             opcoes_pt=?,opcoes_en=?,opcoes_es=?,obrigatorio=?,ativo=?,posicao=? WHERE chave=?`)
+          .bind(c.rot_pt || '', c.rot_en || '', c.rot_es || '',
+            c.dica_pt || '', c.dica_en || '', c.dica_es || '',
+            c.opcoes_pt || '', c.opcoes_en || '', c.opcoes_es || '',
+            c.obrigatorio ? 1 : 0, c.ativo ? 1 : 0, Number(c.posicao) || 0, c.chave).run();
+      }
+      return json({ ok: true, blocos: blocos.length, campos: campos.length });
+    }
+    if (rota === '/form/campos' && metodo === 'POST') {
+      const chave = String(body.chave || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+      if (!chave) return bad('Informe a chave da pergunta.');
+      if (!String(body.rot_pt || '').trim()) return bad('Informe a pergunta em português.');
+      const bloco = String(body.bloco_chave || '').trim();
+      const temBloco = await env.DB.prepare('SELECT chave FROM form_blocos WHERE chave=?').bind(bloco).first();
+      if (!temBloco) return bad('Bloco não encontrado.');
+      const existe = await env.DB.prepare('SELECT id FROM form_campos WHERE chave=?').bind(chave).first();
+      if (existe) return bad('Já existe uma pergunta com essa chave.');
+      const m = await env.DB.prepare('SELECT MAX(posicao) p FROM form_campos').first();
+      const r = await env.DB.prepare(
+        `INSERT INTO form_campos (bloco_chave,chave,tipo,rot_pt,rot_en,rot_es,
+           dica_pt,dica_en,dica_es,opcoes_pt,opcoes_en,opcoes_es,obrigatorio,posicao)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(bloco, chave, body.tipo || 'texto', body.rot_pt, body.rot_en || '', body.rot_es || '',
+          body.dica_pt || '', body.dica_en || '', body.dica_es || '',
+          body.opcoes_pt || '', body.opcoes_en || '', body.opcoes_es || '',
+          body.obrigatorio === 0 || body.obrigatorio === false ? 0 : 1,
+          (Number(m && m.p) || 0) + 1).run();
+      return json({ ok: true, id: r.meta.last_row_id, chave });
+    }
+    if (rota.startsWith('/form/campos/') && metodo === 'DELETE') {
+      // as perguntas de cadastro sustentam o CRM; essas só podem ser desligadas
+      const FIXAS = ['nome', 'email', 'telefone', 'pais'];
+      const c = await env.DB.prepare('SELECT * FROM form_campos WHERE id=?').bind(seg[2]).first();
+      if (!c) return bad('Pergunta não encontrada.', 404);
+      if (FIXAS.includes(c.chave)) return bad('Essa pergunta é obrigatória para o cadastro funcionar.');
+      await env.DB.prepare('DELETE FROM form_campos WHERE id=?').bind(seg[2]).run();
+      return json({ ok: true });
+    }
+
+    // ---------- fuso a partir da cidade ----------
+    if (rota === '/fusos' && metodo === 'GET') {
+      const lugar = url.searchParams.get('lugar') || '';
+      const pais = url.searchParams.get('pais') || '';
+      const fuso = await fusoDoLugar(env, lugar, pais);
+      return json({ fuso, achou: !!fuso });
+    }
+
+    // ---------- bloco de notas que acompanha o Luca em todas as telas ----------
+    if (rota === '/postit' && metodo === 'GET') {
+      const r = await env.DB.prepare(
+        "SELECT key,value FROM settings WHERE key IN ('postit','postit_atualizado')").all();
+      const o = {}; (r.results || []).forEach((x) => { o[x.key] = x.value; });
+      return json({ texto: o.postit || '', atualizado: o.postit_atualizado || '' });
+    }
+    if (rota === '/postit' && metodo === 'PUT') {
+      const texto = String(body.texto == null ? '' : body.texto).slice(0, 20000);
+      const agora = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO settings (key,value) VALUES ('postit',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(texto),
+        env.DB.prepare("INSERT INTO settings (key,value) VALUES ('postit_atualizado',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(texto ? agora : ''),
+      ]);
+      return json({ ok: true, atualizado: texto ? agora : '' });
+    }
+
+    // ==========================================================
     // PLANOS
     // ==========================================================
     // ---------- desempenho dos planos ----------
@@ -993,8 +1298,10 @@ export async function onRequest(context) {
       // Uma passada por tabela em vez de subconsulta por linha: com algumas
       // centenas de pacientes a diferença é de segundos para milissegundos.
       let sql = `
-        SELECT pa.id, pa.cod, pa.nome, pa.apelido, pa.pais, pa.telefone, pa.email,
+        SELECT pa.id, pa.cod, pa.nome, pa.apelido, pa.pais, pa.cidade, pa.fuso,
+               pa.telefone, pa.email, pa.instagram,
                pa.objetivo, pa.status, pa.sexo, pa.altura_cm, pa.nascimento, pa.created_at,
+               pa.inbody_ativo,
                c.codigo_plano  AS plano_atual,
                c.data_final    AS data_final,
                uc.ultima_consulta,
@@ -1029,16 +1336,19 @@ export async function onRequest(context) {
     if (rota === '/pacientes' && metodo === 'POST') {
       const b = body;
       if (!b.nome) return bad('Nome é obrigatório.');
+      // fuso vem da cidade; só respeita o que foi escolhido à mão se veio preenchido
+      const fuso = b.fuso || await fusoDoLugar(env, b.cidade, b.pais);
       const res = await env.DB.prepare(
-        `INSERT INTO pacientes (cod,nome,apelido,pais,email,telefone,instagram,nascimento,cpf,
+        `INSERT INTO pacientes (cod,nome,apelido,pais,cidade,fuso,email,telefone,instagram,nascimento,cpf,
              profissao,endereco,objetivo,status,parceiro_id,indicacao,obs,sexo,altura_cm)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-      ).bind(b.cod || null, b.nome.trim(), b.apelido || null, b.pais || 'Brasil', b.email || null,
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      ).bind(b.cod || null, b.nome.trim(), b.apelido || null, b.pais || 'Brasil',
+        b.cidade || null, fuso || null, b.email || null,
         b.telefone || null, b.instagram || null, b.nascimento || null, b.cpf || null,
         b.profissao || null, b.endereco || null, b.objetivo || null, b.status || 'ativo',
         b.parceiro_id || null, b.indicacao || null, b.obs || null,
         b.sexo || null, b.altura_cm ? num(b.altura_cm) : null).run();
-      return json({ ok: true, id: res.meta.last_row_id });
+      return json({ ok: true, id: res.meta.last_row_id, fuso: fuso || null });
     }
 
     if (rota.startsWith('/pacientes/') && seg.length === 2 && metodo === 'GET') {
@@ -1055,6 +1365,9 @@ export async function onRequest(context) {
         'SELECT * FROM consultas WHERE paciente_id=? ORDER BY data DESC').bind(id).all();
       const anamnese = await env.DB.prepare(
         'SELECT * FROM anamneses WHERE paciente_id=? ORDER BY id DESC LIMIT 1').bind(id).first();
+      const anexos = await env.DB.prepare(
+        `SELECT id,tipo,titulo,data_ref,obs,arquivo_nome,mime,tamanho,created_at
+           FROM anexos WHERE paciente_id=? ORDER BY data_ref DESC, id DESC`).bind(id).all();
       return json({
         paciente: p,
         contratos: contratos.results || [],
@@ -1062,21 +1375,36 @@ export async function onRequest(context) {
         pagamentos: pagamentos.results || [],
         consultas: consultas.results || [],
         anamnese: anamnese || null,
+        anexos: anexos.results || [],
       });
     }
 
     if (rota.startsWith('/pacientes/') && seg.length === 2 && metodo === 'PUT') {
       const id = seg[1]; const b = body;
+      const fuso = b.fuso || await fusoDoLugar(env, b.cidade, b.pais);
       await env.DB.prepare(
-        `UPDATE pacientes SET cod=?,nome=?,apelido=?,pais=?,email=?,telefone=?,instagram=?,
+        `UPDATE pacientes SET cod=?,nome=?,apelido=?,pais=?,cidade=?,fuso=?,email=?,telefone=?,instagram=?,
             nascimento=?,cpf=?,profissao=?,endereco=?,objetivo=?,status=?,parceiro_id=?,indicacao=?,obs=?,
             sexo=?,altura_cm=?,updated_at=datetime('now') WHERE id=?`
-      ).bind(b.cod || null, b.nome, b.apelido || null, b.pais || 'Brasil', b.email || null,
+      ).bind(b.cod || null, b.nome, b.apelido || null, b.pais || 'Brasil',
+        b.cidade || null, fuso || null, b.email || null,
         b.telefone || null, b.instagram || null, b.nascimento || null, b.cpf || null,
         b.profissao || null, b.endereco || null, b.objetivo || null, b.status || 'ativo',
         b.parceiro_id || null, b.indicacao || null, b.obs || null,
         b.sexo || null, b.altura_cm ? num(b.altura_cm) : null, id).run();
-      return json({ ok: true });
+      return json({ ok: true, fuso: fuso || null });
+    }
+
+    // link de anamnese com token: usado para mandar o formulário a quem já
+    // é cliente, sem criar paciente novo nem precisar casar por nome
+    if (rota.startsWith('/pacientes/') && seg[2] === 'anamnese-link' && metodo === 'POST') {
+      const p = await env.DB.prepare('SELECT id, form_token FROM pacientes WHERE id=?').bind(seg[1]).first();
+      if (!p) return bad('Paciente não encontrado.', 404);
+      const token = p.form_token || novoToken();
+      if (!p.form_token) await env.DB.prepare(
+        'UPDATE pacientes SET form_token=? WHERE id=?').bind(token, p.id).run();
+      const base = await baseFormulario(env, url);
+      return json({ ok: true, token, caminho: '/form?t=' + token, link: `${base}/?t=${token}` });
     }
 
     if (rota.startsWith('/pacientes/') && seg.length === 2 && metodo === 'DELETE') {
@@ -1092,8 +1420,110 @@ export async function onRequest(context) {
     }
 
     // ==========================================================
+    // ANEXOS — planos de dieta e outros arquivos do paciente
+    // Arquivo no R2 (binding "ARQUIVOS"), ficha no D1.
+    // ==========================================================
+    const TIPOS_ANEXO = ['dieta', 'treino', 'exame', 'foto', 'outro'];
+    const LIMITE_MB = 25;
+
+    if (rota === '/anexos' && metodo === 'POST') {
+      if (!env.ARQUIVOS)
+        return bad('Armazenamento de arquivos não conectado (binding R2 "ARQUIVOS").', 500);
+      const fd = await request.formData();
+      const arquivo = fd.get('arquivo');
+      const pacienteId = Number(fd.get('paciente_id'));
+      if (!pacienteId) return bad('Informe o paciente.');
+      if (!arquivo || typeof arquivo === 'string' || !arquivo.name)
+        return bad('Escolha um arquivo.');
+      if (arquivo.size > LIMITE_MB * 1024 * 1024)
+        return bad(`Arquivo acima de ${LIMITE_MB} MB.`);
+
+      const tipo = TIPOS_ANEXO.includes(fd.get('tipo')) ? fd.get('tipo') : 'dieta';
+      const limpo = String(arquivo.name).replace(/[^\w.\-]+/g, '_').slice(-80);
+      const chave = `pacientes/${pacienteId}/${crypto.randomUUID()}-${limpo}`;
+
+      await env.ARQUIVOS.put(chave, arquivo.stream(), {
+        httpMetadata: { contentType: arquivo.type || 'application/octet-stream' },
+      });
+
+      const r = await env.DB.prepare(
+        `INSERT INTO anexos (paciente_id,tipo,titulo,data_ref,obs,arquivo_nome,chave,mime,tamanho)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      ).bind(pacienteId, tipo, (fd.get('titulo') || '').trim() || null,
+        (fd.get('data_ref') || '') || hoje(), (fd.get('obs') || '').trim() || null,
+        arquivo.name, chave, arquivo.type || null, arquivo.size).run();
+      return json({ ok: true, id: r.meta.last_row_id });
+    }
+
+    if (rota === '/anexos' && metodo === 'GET') {
+      const pid = url.searchParams.get('paciente_id');
+      if (!pid) return bad('Informe o paciente.');
+      const r = await env.DB.prepare(
+        `SELECT id,paciente_id,tipo,titulo,data_ref,obs,arquivo_nome,mime,tamanho,created_at
+           FROM anexos WHERE paciente_id=?
+          ORDER BY data_ref DESC, id DESC`).bind(pid).all();
+      return json({ anexos: r.results || [] });
+    }
+
+    if (rota.startsWith('/anexos/') && seg.length === 3 && seg[2] === 'arquivo' && metodo === 'GET') {
+      if (!env.ARQUIVOS) return bad('Armazenamento não conectado.', 500);
+      const a = await env.DB.prepare('SELECT * FROM anexos WHERE id=?').bind(seg[1]).first();
+      if (!a) return bad('Anexo não encontrado.', 404);
+      const obj = await env.ARQUIVOS.get(a.chave);
+      if (!obj) return bad('Arquivo não está mais no armazenamento.', 404);
+      return new Response(obj.body, {
+        headers: {
+          'content-type': a.mime || 'application/octet-stream',
+          'content-disposition': `inline; filename="${encodeURIComponent(a.arquivo_nome)}"`,
+          'cache-control': 'private, no-store',
+        },
+      });
+    }
+
+    if (rota.startsWith('/anexos/') && seg.length === 2 && metodo === 'PUT') {
+      const b = body;
+      await env.DB.prepare(
+        'UPDATE anexos SET tipo=?, titulo=?, data_ref=?, obs=? WHERE id=?')
+        .bind(TIPOS_ANEXO.includes(b.tipo) ? b.tipo : 'dieta', b.titulo || null,
+          b.data_ref || null, b.obs || null, seg[1]).run();
+      return json({ ok: true });
+    }
+
+    if (rota.startsWith('/anexos/') && seg.length === 2 && metodo === 'DELETE') {
+      const a = await env.DB.prepare('SELECT * FROM anexos WHERE id=?').bind(seg[1]).first();
+      if (a && env.ARQUIVOS) { try { await env.ARQUIVOS.delete(a.chave); } catch { /* segue */ } }
+      await env.DB.prepare('DELETE FROM anexos WHERE id=?').bind(seg[1]).run();
+      return json({ ok: true });
+    }
+
+    // ==========================================================
     // CONSULTAS (a ficha do caderno)
     // ==========================================================
+    // Refeições deixaram de ser 6 colunas fixas: viram uma lista com nome,
+    // horário e texto. As colunas antigas continuam preenchidas para as
+    // fichas velhas (e para a impressão) não perderem nada.
+    const FIXAS_REF = { 'café da manhã': 'cafe', 'lanche (manhã)': 'lanche_manha',
+      'almoço': 'almoco', 'lanche (tarde)': 'lanche_tarde', 'jantar': 'jantar', 'ceia': 'ceia' };
+    function refeicoesDoCorpo(b) {
+      const lista = Array.isArray(b.refeicoes) ? b.refeicoes
+        .map((r) => ({
+          nome: String(r.nome || '').trim(),
+          hora: String(r.hora || '').trim().slice(0, 5),
+          texto: String(r.texto == null ? '' : r.texto),
+        }))
+        .filter((r) => r.nome) : null;
+      const col = { cafe: null, lanche_manha: null, almoco: null, lanche_tarde: null, jantar: null, ceia: null };
+      if (lista) {
+        lista.forEach((r) => {
+          const k = FIXAS_REF[r.nome.toLowerCase()];
+          if (k && !col[k]) col[k] = r.texto || null;
+        });
+      } else {
+        Object.keys(col).forEach((k) => { col[k] = b[k] || null; });
+      }
+      return { json: lista ? JSON.stringify(lista) : null, col };
+    }
+
     if (rota === '/consultas' && metodo === 'POST') {
       const b = body;
       if (!b.paciente_id) return bad('Informe o paciente.');
@@ -1101,13 +1531,20 @@ export async function onRequest(context) {
       let lbs = b.peso_lbs === '' || b.peso_lbs == null ? null : num(b.peso_lbs);
       if (kg && !lbs) lbs = Math.round(kg * 2.20462 * 10) / 10;
       if (lbs && !kg) kg = Math.round((lbs / 2.20462) * 10) / 10;
+      const { json: refJson, col } = refeicoesDoCorpo(b);
       const res = await env.DB.prepare(
         `INSERT INTO consultas (paciente_id,data,peso_kg,peso_lbs,treino,cafe,lanche_manha,
-             almoco,lanche_tarde,jantar,ceia,observacoes)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
-      ).bind(b.paciente_id, b.data || hoje(), kg, lbs, b.treino || null, b.cafe || null,
-        b.lanche_manha || null, b.almoco || null, b.lanche_tarde || null, b.jantar || null,
-        b.ceia || null, b.observacoes || null).run();
+             almoco,lanche_tarde,jantar,ceia,observacoes,refeicoes,objetivo,tmb,get_kcal,fator_atividade)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      ).bind(b.paciente_id, b.data || hoje(), kg, lbs, b.treino || null, col.cafe,
+        col.lanche_manha, col.almoco, col.lanche_tarde, col.jantar,
+        col.ceia, b.observacoes || null, refJson, b.objetivo || null,
+        b.tmb ? num(b.tmb) : null, b.get_kcal ? num(b.get_kcal) : null,
+        b.fator_atividade ? num(b.fator_atividade) : null).run();
+      // o objetivo escolhido na consulta passa a ser o objetivo do paciente
+      if (b.objetivo) await env.DB.prepare(
+        "UPDATE pacientes SET objetivo=?, updated_at=datetime('now') WHERE id=?")
+        .bind(b.objetivo, b.paciente_id).run();
       return json({ ok: true, id: res.meta.last_row_id });
     }
 
@@ -1117,12 +1554,19 @@ export async function onRequest(context) {
       let lbs = b.peso_lbs === '' || b.peso_lbs == null ? null : num(b.peso_lbs);
       if (kg && !lbs) lbs = Math.round(kg * 2.20462 * 10) / 10;
       if (lbs && !kg) kg = Math.round((lbs / 2.20462) * 10) / 10;
+      const { json: refJson, col } = refeicoesDoCorpo(b);
       await env.DB.prepare(
         `UPDATE consultas SET data=?,peso_kg=?,peso_lbs=?,treino=?,cafe=?,lanche_manha=?,almoco=?,
-            lanche_tarde=?,jantar=?,ceia=?,observacoes=?,updated_at=datetime('now') WHERE id=?`
-      ).bind(b.data, kg, lbs, b.treino || null, b.cafe || null, b.lanche_manha || null,
-        b.almoco || null, b.lanche_tarde || null, b.jantar || null, b.ceia || null,
-        b.observacoes || null, id).run();
+            lanche_tarde=?,jantar=?,ceia=?,observacoes=?,refeicoes=?,objetivo=?,tmb=?,get_kcal=?,
+            fator_atividade=?,updated_at=datetime('now') WHERE id=?`
+      ).bind(b.data, kg, lbs, b.treino || null, col.cafe, col.lanche_manha,
+        col.almoco, col.lanche_tarde, col.jantar, col.ceia,
+        b.observacoes || null, refJson, b.objetivo || null,
+        b.tmb ? num(b.tmb) : null, b.get_kcal ? num(b.get_kcal) : null,
+        b.fator_atividade ? num(b.fator_atividade) : null, id).run();
+      if (b.objetivo && b.paciente_id) await env.DB.prepare(
+        "UPDATE pacientes SET objetivo=?, updated_at=datetime('now') WHERE id=?")
+        .bind(b.objetivo, b.paciente_id).run();
       return json({ ok: true });
     }
 
@@ -1263,7 +1707,9 @@ export async function onRequest(context) {
       const de = url.searchParams.get('de') || addDias(hoje(), -30);
       const ate = url.searchParams.get('ate') || addDias(hoje(), 90);
       const r = await env.DB.prepare(
-        `SELECT c.*, pa.nome paciente_nome, pa.apelido paciente_apelido, pa.cod paciente_cod
+        `SELECT c.*, pa.nome paciente_nome, pa.apelido paciente_apelido, pa.cod paciente_cod,
+                pa.instagram paciente_instagram, pa.telefone paciente_telefone,
+                pa.cidade paciente_cidade, pa.fuso paciente_fuso, pa.pais paciente_pais
            FROM compromissos c LEFT JOIN pacientes pa ON pa.id=c.paciente_id
           WHERE substr(c.inicio,1,10) BETWEEN ? AND ? ORDER BY c.inicio ASC`).bind(de, ate).all();
       return json({ compromissos: r.results || [] });
@@ -1684,7 +2130,18 @@ export async function onRequest(context) {
       if (!t) return bad('Modelo não encontrado.');
       const pac = b.paciente_id
         ? await env.DB.prepare('SELECT * FROM pacientes WHERE id=?').bind(b.paciente_id).first() : {};
-      return json({ mensagem: montarTexto(t.corpo, { ...(pac || {}), ...(b.ctx || {}) }), template: t });
+      // modelo que manda o formulário precisa de um link com token para esse paciente
+      const extra = {};
+      if (pac && pac.id && /\{link_anamnese\}/.test(t.corpo)) {
+        const token = pac.form_token || novoToken();
+        if (!pac.form_token) await env.DB.prepare(
+          'UPDATE pacientes SET form_token=? WHERE id=?').bind(token, pac.id).run();
+        extra.link_anamnese = `${await baseFormulario(env, url)}/?t=${token}`;
+      }
+      return json({
+        mensagem: montarTexto(t.corpo, { ...(pac || {}), ...extra, ...(b.ctx || {}) }),
+        template: t,
+      });
     }
 
     if (rota === '/whatsapp/agendar' && metodo === 'POST') {

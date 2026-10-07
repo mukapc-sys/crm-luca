@@ -50,7 +50,18 @@ const CORES_COMPROMISSO = {
 };
 const ROTULO_COMPROMISSO = { marcado: 'Marcado', feito: 'Realizado', cancelado: 'Cancelado' };
 
-const OBJETIVOS = ['Emagrecimento', 'Definição muscular', 'Ganho de massa muscular', 'Manutenção do peso'];
+// Objetivos ficam no banco: o Luca cria e renomeia em Configurações.
+let OBJETIVOS = ['Emagrecimento', 'Definição muscular', 'Ganho de massa muscular', 'Manutenção do peso'];
+let OBJ_LISTA = [];
+async function carregarObjetivos(forcar) {
+  if (OBJ_LISTA.length && !forcar) return OBJ_LISTA;
+  try {
+    OBJ_LISTA = (await api('/objetivos')).objetivos || [];
+    const ativos = OBJ_LISTA.filter((o) => o.ativo).map((o) => o.nome);
+    if (ativos.length) OBJETIVOS = ativos;
+  } catch { /* offline: segue com a lista que já estava na tela */ }
+  return OBJ_LISTA;
+}
 // base real do Luca: 8 países. Lista cresce sozinha com o que estiver cadastrado.
 const PAISES_BASE = ['Brasil', 'US', 'Portugal', 'Inglaterra', 'Canadá', 'Colômbia', 'Luxemburgo', 'Tchéquia'];
 let PAISES = [...PAISES_BASE];
@@ -108,6 +119,8 @@ $('#btnSair').onclick = () => sair(false);
 async function entrarApp() {
   $('#login').classList.add('hide'); $('#app').classList.remove('hide');
   PLANOS = (await api('/planos')).planos;
+  await carregarObjetivos(true);
+  iniciarPostit();
   irPara('home');
 }
 
@@ -117,7 +130,7 @@ function irPara(t) {
   $$('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tela === t));
   ({ home: telaHome, funil: telaFunil, pacientes: telaPacientes, agenda: telaAgenda,
      financeiro: telaFinanceiro, whatsapp: telaWhatsapp, planos: telaPlanos,
-     config: telaConfig }[t])();
+     conversores: telaConversores, config: telaConfig }[t])();
 }
 
 /* ==========================================================
@@ -802,8 +815,9 @@ const fecharModal = () => { const m = $('#modalAtual'); if (m) m.remove(); };
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') fecharModal(); });
 
 /* ---------- ficha do paciente ---------- */
-async function abrirPaciente(id) {
+async function abrirPaciente(id, aba) {
   if (!id) return formPaciente(null);
+  await carregarObjetivos();
   const d = await api('/pacientes/' + id);
   const p = d.paciente;
   const pesos = d.consultas.filter((c) => c.peso_kg).reverse();
@@ -815,6 +829,8 @@ async function abrirPaciente(id) {
       <button class="on" data-a="visao">Visão geral</button>
       <button data-a="consultas">Consultas (${d.consultas.length})</button>
       <button data-a="financeiro">Financeiro</button>
+      <button data-a="anexos">Planos e anexos${d.anexos && d.anexos.length ? ` (${d.anexos.length})` : ''}</button>
+      <button data-a="inbody">InBody${p.inbody_ativo ? '' : ' <small>off</small>'}</button>
       <button data-a="anamnese">Anamnese</button>
     </div>
 
@@ -844,6 +860,7 @@ async function abrirPaciente(id) {
         <button class="btn ghost" onclick="formPaciente(${p.id})">Editar cadastro</button>
         <button class="btn ghost" onclick="abrirContrato(${p.id})">+ Contrato</button>
         <button class="btn zap" onclick="waEnviar(${p.id})">WhatsApp</button>
+        <button class="btn ghost" onclick="linkAnamnese(${p.id})">Mandar anamnese</button>
       </div>
     </div>
 
@@ -881,6 +898,14 @@ async function abrirPaciente(id) {
       <button class="btn ghost" style="margin-top:12px" onclick="abrirContrato(${p.id})">+ Contrato</button>
     </div>
 
+    <div data-p="anexos" class="hide">
+      ${blocoAnexos(p.id, d.anexos || [])}
+    </div>
+
+    <div data-p="inbody" class="hide">
+      ${blocoInbody(p.id, p)}
+    </div>
+
     <div data-p="anamnese" class="hide">
       ${!d.anamnese ? '<p class="vazio">Nenhuma anamnese vinculada a este paciente.</p>' :
         `<div class="card"><small style="color:var(--txt-2)">Respondido em ${dataBR(d.anamnese.respondido_em)} · origem ${esc(d.anamnese.origem)}</small>
@@ -895,8 +920,37 @@ async function abrirPaciente(id) {
     b.onclick = () => {
       $$('#abasPac button').forEach((x) => x.classList.toggle('on', x === b));
       $$('[data-p]').forEach((x) => x.classList.toggle('hide', x.dataset.p !== b.dataset.a));
+      // o InBody só vai ao banco quando ele abre a aba
+      if (b.dataset.a === 'inbody' && p.inbody_ativo) pintarInbody(p.id);
     };
   });
+  if (aba) {
+    const alvo = $(`#abasPac button[data-a="${aba}"]`);
+    if (alvo) alvo.click();
+  }
+}
+
+/* ---------- link do formulário de anamnese para um paciente ---------- */
+async function linkAnamnese(pacienteId) {
+  try {
+    const r = await api(`/pacientes/${pacienteId}/anamnese-link`, { method: 'POST', body: {} });
+    const p = (await api('/pacientes/' + pacienteId)).paciente;
+    modal('Mandar o formulário de anamnese', `
+      <p style="font-size:13.5px;color:var(--txt-2);margin:0 0 12px">
+        Esse link é só deste paciente: a resposta cai direto na ficha dele,
+        sem criar cadastro novo. Vale até ser respondido.</p>
+      <label>Link</label>
+      <input id="laLink" readonly onclick="this.select()" value="${esc(r.link)}"
+        style="font-family:ui-monospace,monospace;font-size:12.5px">
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <button class="btn ghost mini" onclick="navigator.clipboard.writeText($('#laLink').value);toast('Link copiado')">Copiar</button>
+        <a class="btn ghost mini" href="${esc(r.link)}" target="_blank" rel="noopener" style="text-decoration:none">Abrir</a>
+        <button class="btn zap mini" id="laZap">Mandar no WhatsApp</button>
+      </div>`, `
+      <button class="btn ghost" onclick="abrirPaciente(${pacienteId})">Voltar à ficha</button>`);
+    $('#laZap').onclick = () => zap(p.telefone,
+      `Oi ${String(p.nome || '').trim().split(/\s+/)[0]}! Preenche esse formulário pra mim antes da nossa conversa: ${r.link}`);
+  } catch (e) { toast(e.message); }
 }
 
 /* ---------- cadastro / edição de paciente ---------- */
@@ -914,6 +968,10 @@ async function formPaciente(id) {
       <div><label>Apelido interno</label><input id="pApelido" placeholder="como o Luca lembra dele" value="${esc(p.apelido || '')}"></div>
       <div><label>País</label><input id="pPais" list="listaPaises" value="${esc(p.pais || 'Brasil')}">
         <datalist id="listaPaises">${PAISES.map((x) => `<option value="${esc(x)}">`).join('')}</datalist></div>
+      <div><label>Cidade</label><input id="pCidade" placeholder="ex.: San Diego, CA" value="${esc(p.cidade || '')}">
+        <small id="pFusoAviso" style="display:block;font-size:12px;color:var(--txt-2);margin-top:4px">${
+          p.fuso ? 'Fuso: ' + esc(p.fuso) : 'O fuso sai da cidade — é o horário que o WhatsApp respeita.'}</small>
+        <input type="hidden" id="pFuso" value="${esc(p.fuso || '')}"></div>
       <div><label>Sexo</label><select id="pSexo">
         <option value=""${!p.sexo ? ' selected' : ''}>—</option>
         <option value="F"${p.sexo === 'F' ? ' selected' : ''}>Feminino</option>
@@ -943,11 +1001,13 @@ async function formPaciente(id) {
     <button class="btn ouro" id="salvarPac">Salvar</button>`);
 
   ligarAltura('pAltura', 'pAltPes', 'pAltPol');
+  ligarCidadeFuso('pCidade', 'pPais', 'pFuso', 'pFusoAviso');
 
   $('#salvarPac').onclick = async () => {
     const body = {
       cod: $('#pCod').value.trim(), nome: $('#pNome').value.trim(), apelido: $('#pApelido').value.trim(),
-      pais: $('#pPais').value, telefone: $('#pTel').value.trim(), email: $('#pEmail').value.trim(),
+      pais: $('#pPais').value, cidade: $('#pCidade').value.trim(), fuso: $('#pFuso').value || null,
+      telefone: $('#pTel').value.trim(), email: $('#pEmail').value.trim(),
       instagram: $('#pInsta').value.trim(), nascimento: $('#pNasc').value, profissao: $('#pProf').value.trim(),
       objetivo: $$('.objChk').filter((c) => c.checked).map((c) => c.value).join(', '),
       indicacao: $('#pInd').value.trim(), cpf: $('#pCpf').value.trim(),
@@ -970,19 +1030,233 @@ async function excluirPaciente(id) {
 }
 
 /* ==========================================================
-   FICHA DE CONSULTA — o caderno
+   ANEXOS — o plano de dieta que o Luca monta em outro sistema
+   entra aqui com data e observação, e o histórico fica na ficha.
    ========================================================== */
+const TIPOS_ANEXO = [['dieta', 'Plano de dieta'], ['treino', 'Plano de treino'],
+  ['exame', 'Exame'], ['foto', 'Foto'], ['outro', 'Outro']];
+const rotuloTipo = (t) => (TIPOS_ANEXO.find(([k]) => k === t) || [, t])[1];
+const tamanhoLegivel = (b) => !b ? '—'
+  : b < 1024 ? b + ' B'
+  : b < 1048576 ? (b / 1024).toFixed(0) + ' KB'
+  : (b / 1048576).toFixed(1) + ' MB';
+
+function blocoAnexos(pacienteId, anexos) {
+  const porTipo = {};
+  anexos.forEach((a) => { (porTipo[a.tipo] = porTipo[a.tipo] || []).push(a); });
+  // o mais recente de cada tipo é o que vale hoje
+  const atual = {};
+  Object.entries(porTipo).forEach(([t, lista]) => { atual[t] = lista[0].id; });
+
+  const linha = (a) => `
+    <div class="linha-aviso">
+      <span class="tag ${atual[a.tipo] === a.id ? 'ativo' : ''}" style="min-width:74px;text-align:center">
+        ${atual[a.tipo] === a.id ? 'atual' : dataBR(a.data_ref).slice(0, 5)}</span>
+      <div class="txt">
+        <b>${esc(a.titulo || a.arquivo_nome)}</b>
+        <small>${dataBR(a.data_ref)} · ${esc(a.arquivo_nome)} · ${tamanhoLegivel(a.tamanho)}
+          ${a.obs ? `<br><span style="color:var(--txt)">${esc(a.obs)}</span>` : ''}</small>
+      </div>
+      <button class="btn mini ghost" onclick="abrirAnexo(${a.id})">Abrir</button>
+      <button class="btn mini ghost" onclick="editarAnexo(${a.id},${pacienteId})">Editar</button>
+      <button class="btn mini perigo" onclick="excluirAnexo(${a.id},${pacienteId})">Excluir</button>
+    </div>`;
+
+  // o que ele abre toda hora é o plano de agora; anexar é eventual, fica recolhido
+  return `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <button class="btn ouro" onclick="mostrarEnvioAnexo()" id="axAbrir">+ Anexar arquivo</button>
+      <small style="color:var(--txt-2)">Cada troca de dieta entra como um anexo novo — o antigo não some.</small>
+    </div>
+
+    <div class="card hide" id="axForm" style="margin-bottom:12px">
+      <h3>Anexar arquivo</h3>
+      <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 12px">
+        O plano que você monta no outro sistema fica guardado aqui, com data.</p>
+      <div class="grid g2">
+        <div><label>Tipo</label><select id="axTipo">
+          ${TIPOS_ANEXO.map(([k, r]) => `<option value="${k}">${r}</option>`).join('')}</select></div>
+        <div><label>Data do plano</label><input id="axData" type="date" value="${hojeISO()}"></div>
+      </div>
+      <div style="margin-top:10px"><label>Título</label>
+        <input id="axTitulo" placeholder="ex.: Dieta fase 2 — corte"></div>
+      <div style="margin-top:10px"><label>Observação</label>
+        <textarea id="axObs" placeholder="o que mudou em relação ao anterior"></textarea></div>
+      <div style="margin-top:10px"><label>Arquivo (até 25 MB)</label>
+        <input id="axArquivo" type="file"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn ouro" onclick="enviarAnexo(${pacienteId})" id="axEnviar">Anexar</button>
+        <button class="btn ghost" onclick="mostrarEnvioAnexo(false)">Cancelar</button>
+      </div>
+      <div id="axStatus" style="margin-top:10px;font-size:13px"></div>
+    </div>
+
+    ${!anexos.length ? '<p class="vazio">Nenhum arquivo anexado ainda.</p>' :
+      TIPOS_ANEXO.filter(([k]) => porTipo[k]).map(([k, r]) => `
+        <div class="card" style="margin-bottom:12px">
+          <h3>${r} <span class="tag">${porTipo[k].length}</span></h3>
+          ${porTipo[k].map(linha).join('')}
+        </div>`).join('')}`;
+}
+
+function mostrarEnvioAnexo(abrir = true) {
+  $('#axForm').classList.toggle('hide', !abrir);
+  $('#axAbrir').classList.toggle('hide', abrir);
+  if (abrir) $('#axTitulo').focus();
+}
+
+async function enviarAnexo(pacienteId) {
+  const arq = $('#axArquivo').files[0];
+  const st = $('#axStatus'), btn = $('#axEnviar');
+  if (!arq) return toast('Escolha um arquivo.');
+  if (arq.size > 25 * 1024 * 1024) return toast('Arquivo acima de 25 MB.');
+
+  const fd = new FormData();
+  fd.append('arquivo', arq);
+  fd.append('paciente_id', pacienteId);
+  fd.append('tipo', $('#axTipo').value);
+  fd.append('data_ref', $('#axData').value || hojeISO());
+  fd.append('titulo', $('#axTitulo').value);
+  fd.append('obs', $('#axObs').value);
+
+  btn.disabled = true; st.textContent = 'Enviando…';
+  try {
+    const r = await fetch('/api/anexos', {
+      method: 'POST', headers: { authorization: 'Bearer ' + TOKEN }, body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'erro ao enviar');
+    toast('Arquivo anexado');
+    fecharModal(); abrirPaciente(pacienteId, 'anexos');
+  } catch (e) {
+    st.innerHTML = `<b style="color:var(--erro)">${esc(e.message)}</b>`;
+    btn.disabled = false;
+  }
+}
+
+// baixa com o token da sessão e abre numa aba; link direto não carrega cabeçalho
+async function abrirAnexo(id) {
+  toast('Abrindo…');
+  try {
+    const r = await fetch(`/api/anexos/${id}/arquivo`, { headers: { authorization: 'Bearer ' + TOKEN } });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'não consegui abrir');
+    const url = URL.createObjectURL(await r.blob());
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) { toast(e.message); }
+}
+
+async function editarAnexo(id, pacienteId) {
+  const { anexos } = await api('/anexos?paciente_id=' + pacienteId);
+  const a = anexos.find((x) => x.id === id);
+  if (!a) return toast('Anexo não encontrado.');
+  modal('Editar anexo', `
+    <div class="grid g2">
+      <div><label>Tipo</label><select id="edTipo">
+        ${TIPOS_ANEXO.map(([k, r]) => `<option value="${k}"${a.tipo === k ? ' selected' : ''}>${r}</option>`).join('')}
+      </select></div>
+      <div><label>Data do plano</label><input id="edData" type="date" value="${esc(a.data_ref || '')}"></div>
+    </div>
+    <div style="margin-top:10px"><label>Título</label>
+      <input id="edTitulo" value="${esc(a.titulo || '')}"></div>
+    <div style="margin-top:10px"><label>Observação</label>
+      <textarea id="edObs">${esc(a.obs || '')}</textarea></div>
+    <p style="font-size:12.5px;color:var(--txt-2);margin:10px 0 0">
+      Arquivo: ${esc(a.arquivo_nome)} · ${tamanhoLegivel(a.tamanho)}.
+      Para trocar o arquivo, anexe um novo — o histórico fica.</p>`, `
+    <button class="btn ghost" onclick="abrirPaciente(${pacienteId})">Cancelar</button>
+    <button class="btn ouro" id="edSalvar">Salvar</button>`);
+  $('#edSalvar').onclick = async () => {
+    await api('/anexos/' + id, { method: 'PUT', body: {
+      tipo: $('#edTipo').value, data_ref: $('#edData').value,
+      titulo: $('#edTitulo').value, obs: $('#edObs').value } });
+    toast('Anexo atualizado'); abrirPaciente(pacienteId);
+  };
+}
+
+async function excluirAnexo(id, pacienteId) {
+  if (!confirm('Excluir este anexo? O arquivo sai do armazenamento e não volta.')) return;
+  await api('/anexos/' + id, { method: 'DELETE' });
+  toast('Anexo excluído'); abrirPaciente(pacienteId);
+}
+
+/* ==========================================================
+   FICHA DE CONSULTA — o caderno
+   Refeições viraram lista: ele acrescenta as que quiser e põe
+   horário em cada uma. O objetivo e a TMB ficam à vista, e a
+   TMB recalcula sozinha ao digitar o peso — inclusive porque
+   a idade usada é a do DIA DA CONSULTA, então o metabolismo
+   muda sozinho quando o paciente faz aniversário.
+   ========================================================== */
+const REFEICOES_PADRAO = ['Café da manhã', 'Lanche (manhã)', 'Almoço',
+  'Lanche (tarde)', 'Jantar', 'Ceia'];
+
+// fichas antigas guardavam 6 colunas fixas; viram lista sem perder nada
+function refeicoesDaFicha(c) {
+  if (c && c.refeicoes) {
+    try {
+      const l = JSON.parse(c.refeicoes);
+      if (Array.isArray(l) && l.length) return l;
+    } catch { /* json torto: cai para as colunas antigas */ }
+  }
+  const velhas = [['Café da manhã', 'cafe'], ['Lanche (manhã)', 'lanche_manha'],
+    ['Almoço', 'almoco'], ['Lanche (tarde)', 'lanche_tarde'],
+    ['Jantar', 'jantar'], ['Ceia', 'ceia']];
+  if (c && velhas.some(([, k]) => c[k])) {
+    return velhas.map(([nome, k]) => ({ nome, hora: '', texto: c[k] || '' }));
+  }
+  return REFEICOES_PADRAO.map((nome) => ({ nome, hora: '', texto: '' }));
+}
+
+let REF_ATUAIS = [];
+
+function linhaRefeicao(r, i) {
+  return `
+    <div class="refeicao" data-ref="${i}">
+      <div class="rot">
+        <input class="refNome" value="${esc(r.nome)}" placeholder="nome da refeição">
+        <input class="refHora" type="time" value="${esc(r.hora || '')}">
+        <button type="button" class="btn mini ghost refTirar" title="Remover esta refeição">×</button>
+      </div>
+      <textarea class="refTexto">${esc(r.texto || '')}</textarea>
+    </div>`;
+}
+
+function pintarRefeicoes() {
+  $('#refLista').innerHTML = REF_ATUAIS.map(linhaRefeicao).join('');
+  $$('#refLista .refTirar').forEach((b, i) => {
+    b.onclick = () => { lerRefeicoes(); REF_ATUAIS.splice(i, 1); pintarRefeicoes(); };
+  });
+}
+function lerRefeicoes() {
+  REF_ATUAIS = $$('#refLista .refeicao').map((el) => ({
+    nome: $('.refNome', el).value.trim(),
+    hora: $('.refHora', el).value,
+    texto: $('.refTexto', el).value,
+  }));
+}
+function adicionarRefeicao() {
+  lerRefeicoes();
+  REF_ATUAIS.push({ nome: '', hora: '', texto: '' });
+  pintarRefeicoes();
+  const ult = $$('#refLista .refNome').pop();
+  if (ult) ult.focus();
+}
+
 async function abrirConsulta(pacienteId, consultaId) {
+  await carregarObjetivos();
+  if (!CACHE.settings) CACHE.settings = (await api('/settings')).settings;
   const d = await api('/pacientes/' + pacienteId);
   const p = d.paciente;
   const c = consultaId ? d.consultas.find((x) => x.id === consultaId) || {} : {};
   const anterior = d.consultas.filter((x) => x.peso_kg && x.id !== consultaId)[0];
+  REF_ATUAIS = refeicoesDaFicha(consultaId ? c : null);
 
-  const ref = (id, rot, val) => `
-    <div class="refeicao">
-      <div class="rot"><b>${rot}</b></div>
-      <textarea id="${id}">${esc(val || '')}</textarea>
-    </div>`;
+  const dataFicha = c.data || hojeISO();
+  const objetivoAtual = c.objetivo || p.objetivo || '';
+  const listaObj = [...new Set([...OBJETIVOS, ...String(objetivoAtual).split(',').map((s) => s.trim())])]
+    .filter(Boolean);
+  const fs = fatores(p.sexo || 'F');
+  const fatorAtual = c.fator_atividade || (fs[Math.min(1, fs.length - 1)] || {}).fator || 1.55;
 
   const corpo = `
     <div class="caderno">
@@ -992,52 +1266,112 @@ async function abrirConsulta(pacienteId, consultaId) {
             ${p.apelido ? `<span class="apelido">“${esc(p.apelido)}”</span>` : ''}</div>
           <div style="margin-top:4px">${p.cod ? `<span class="cod">COD ${esc(p.cod)}</span>` : ''}</div>
         </div>
-        <div><label>Data</label><input id="cData" type="date" value="${esc(c.data || hojeISO())}"></div>
+        <div><label>Data</label><input id="cData" type="date" value="${esc(dataFicha)}"></div>
       </div>
+
       <div class="grid g2" style="margin:12px 0">
         ${campoPeso('cKg', 'cLbs', c.peso_kg ?? null)}
       </div>
       ${anterior ? `<p style="margin:-4px 0 12px;font-size:13px;color:var(--txt-2)">
         Última medição: <b>${anterior.peso_kg} kg</b> em ${dataBR(anterior.data)}
         <span id="cDelta"></span></p>` : ''}
-      ${ref('cTreino', 'Treino', c.treino)}
-      ${ref('cCafe', 'Café da manhã', c.cafe)}
-      ${ref('cLancheM', 'Lanche (manhã)', c.lanche_manha)}
-      ${ref('cAlmoco', 'Almoço', c.almoco)}
-      ${ref('cLancheT', 'Lanche (tarde)', c.lanche_tarde)}
-      ${ref('cJantar', 'Jantar', c.jantar)}
-      ${ref('cCeia', 'Ceia', c.ceia)}
-      <div style="padding-top:12px"><label>Observações</label>
+
+      <div class="grid g2" style="margin-bottom:12px">
+        <div><label>Objetivo de agora</label>
+          <select id="cObjetivo">
+            <option value="">— sem objetivo definido —</option>
+            ${listaObj.map((o) => `<option${o === objetivoAtual ? ' selected' : ''}>${esc(o)}</option>`).join('')}
+          </select>
+          <small style="display:block;font-size:12px;color:var(--txt-2);margin-top:4px">
+            Trocar aqui atualiza o objetivo do paciente.</small></div>
+        <div><label>Nível de atividade</label>
+          <select id="cFator">${fs.map((f) => `<option value="${f.fator}"${
+            Number(fatorAtual) === f.fator ? ' selected' : ''}>${esc(f.nome)} (${f.fator})</option>`).join('')}
+          </select></div>
+      </div>
+
+      <div class="kpi-tmb" id="cBlocoTmb">
+        <div><span>Metabolismo basal (TMB)</span><b id="cTmbFicha">—</b></div>
+        <div><span>Gasto energético total</span><b id="cGetFicha">—</b></div>
+        <div class="obs"><span id="cTmbNota"></span></div>
+      </div>
+
+      <div class="refeicao" style="margin-top:14px">
+        <div class="rot"><b>Treino</b></div>
+        <textarea id="cTreino">${esc(c.treino || '')}</textarea>
+      </div>
+
+      <div id="refLista"></div>
+      <button type="button" class="btn ghost mini" style="margin-top:4px" onclick="adicionarRefeicao()">
+        + Adicionar refeição</button>
+
+      <div style="padding-top:14px"><label>Observações</label>
         <textarea id="cObs" style="min-height:80px">${esc(c.observacoes || '')}</textarea></div>
     </div>`;
 
   modal(consultaId ? 'Ficha de consulta' : 'Nova ficha de consulta', corpo, `
     ${consultaId ? `<button class="btn perigo" onclick="excluirConsulta(${consultaId},${pacienteId})">Excluir</button>` : ''}
-    <button class="btn ghost" onclick="abrirCalculadora(${pacienteId})">Metabolismo</button>
+    <button class="btn ghost" onclick="abrirCalculadora(${pacienteId})">Calculadora</button>
     <button class="btn ghost" onclick="window.print()">Imprimir</button>
     <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
     <button class="btn ouro" id="salvarCons">Salvar ficha</button>`);
 
-  // kg <-> lbs ao vivo + variação
+  pintarRefeicoes();
+
   const kg = $('#cKg'), lbs = $('#cLbs');
-  const delta = () => {
-    if (!anterior || !$('#cDelta')) return;
-    const v = Number(kg.value);
-    if (!v) { $('#cDelta').textContent = ''; return; }
-    const dd = v - anterior.peso_kg;
-    $('#cDelta').innerHTML = ` · <b style="color:${dd < 0 ? 'var(--ok)' : dd > 0 ? 'var(--alerta)' : 'var(--txt-2)'}">
-      ${dd > 0 ? '+' : ''}${dd.toFixed(1)} kg</b>`;
-  };
-  ligarPeso('cKg', 'cLbs', delta);
-  delta();
+  let ULTIMO = { tmb: null, get: null };
+
+  function recalcular() {
+    if (anterior && $('#cDelta')) {
+      const v = Number(kg.value);
+      if (!v) $('#cDelta').textContent = '';
+      else {
+        const dd = v - anterior.peso_kg;
+        $('#cDelta').innerHTML = ` · <b style="color:${dd < 0 ? 'var(--ok)' : dd > 0 ? 'var(--alerta)' : 'var(--txt-2)'}">
+          ${dd > 0 ? '+' : ''}${dd.toFixed(1)} kg</b>`;
+      }
+    }
+    // idade na DATA DA FICHA: o metabolismo muda sozinho no aniversário
+    const idade = idadePor(p.nascimento, $('#cData').value || hojeISO());
+    const tmb = tmbHarrisBenedict(p.sexo || 'F', Number(kg.value), Number(p.altura_cm), idade);
+    const fator = Number($('#cFator').value) || 0;
+    const get = tmb != null && fator ? tmb * fator : null;
+    ULTIMO = { tmb, get, fator };
+
+    $('#cTmbFicha').textContent = tmb == null ? '—' : fmtKcal(kcal(tmb));
+    $('#cGetFicha').textContent = get == null ? '—' : fmtKcal(kcal(get));
+
+    // o que falta pode estar no cadastro ou aqui na ficha: o aviso diz onde
+    const noCadastro = [];
+    if (!p.sexo) noCadastro.push('sexo');
+    if (!p.altura_cm) noCadastro.push('altura');
+    if (!idade) noCadastro.push('data de nascimento');
+    const semPeso = !Number(kg.value);
+    $('#cTmbNota').innerHTML = noCadastro.length
+      ? `Falta <b>${noCadastro.join(', ')}</b> no cadastro do paciente.
+         <a href="#" onclick="event.preventDefault();fecharModal();formPaciente(${p.id})">Completar agora</a>`
+      : semPeso ? 'Preencha o peso acima e a TMB aparece aqui.'
+      : `${idade} anos na data da ficha · Harris-Benedict × ${fator}` +
+        (anterior && anterior.tmb ? ` · na ficha anterior era ${fmtKcal(kcal(anterior.tmb))}` : '');
+    $('#cBlocoTmb').classList.toggle('incompleto', noCadastro.length > 0 || semPeso);
+  }
+
+  ligarPeso('cKg', 'cLbs', recalcular);
+  $('#cData').onchange = recalcular;
+  $('#cFator').onchange = recalcular;
+  recalcular();
 
   $('#salvarCons').onclick = async () => {
+    lerRefeicoes();
     const body = {
       paciente_id: pacienteId, data: $('#cData').value || hojeISO(),
       peso_kg: kg.value, peso_lbs: lbs.value,
-      treino: $('#cTreino').value, cafe: $('#cCafe').value, lanche_manha: $('#cLancheM').value,
-      almoco: $('#cAlmoco').value, lanche_tarde: $('#cLancheT').value, jantar: $('#cJantar').value,
-      ceia: $('#cCeia').value, observacoes: $('#cObs').value,
+      treino: $('#cTreino').value, observacoes: $('#cObs').value,
+      refeicoes: REF_ATUAIS.filter((r) => r.nome),
+      objetivo: $('#cObjetivo').value || null,
+      tmb: ULTIMO.tmb ? kcal(ULTIMO.tmb) : null,
+      get_kcal: ULTIMO.get ? kcal(ULTIMO.get) : null,
+      fator_atividade: ULTIMO.fator || null,
     };
     try {
       if (consultaId) await api('/consultas/' + consultaId, { method: 'PUT', body });
@@ -1186,11 +1520,17 @@ async function telaAgenda() {
       ${evs.map((e) => {
         const cor = CORES_COMPROMISSO[e.status] || CORES_COMPROMISSO.marcado;
         const quem = e.paciente_apelido || e.paciente_nome;
+        const arroba = perfilInsta(e.paciente_instagram);
         return `<div onclick="abrirCompromisso(${e.id})" title="${esc(e.titulo)}${quem ? ' · ' + esc(quem) : ''}"
           style="cursor:pointer;font-size:11.5px;background:${cor.bg};color:${cor.txt};
                  border-left:3px solid ${cor.borda};padding:3px 6px;border-radius:5px;margin-bottom:3px;
                  overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-          <b>${horaBR(e.inicio)}</b> ${esc(e.titulo)}${quem ? ` · <b>${esc(quem)}</b>` : ''}</div>`;
+          <b>${horaBR(e.inicio)}</b> ${esc(e.titulo)}${quem ? ` · <b>${esc(quem)}</b>` : ''}</div>
+          ${arroba ? `<a href="${arroba.url}" target="_blank" rel="noopener"
+            onclick="event.stopPropagation()" title="Abrir o Instagram de ${esc(quem || '')}"
+            style="display:block;font-size:11px;color:var(--navy-3);text-decoration:none;
+                   padding:0 6px 3px 12px;margin-top:-2px;margin-bottom:3px;
+                   overflow:hidden;text-overflow:ellipsis;white-space:nowrap">↗ ${esc(arroba.arroba)}</a>` : ''}`;
       }).join('')}
     </div>`);
   }
@@ -2271,6 +2611,16 @@ async function telaConfig() {
           <textarea id="sFatM" style="min-height:92px;font-family:ui-monospace,monospace;font-size:12.5px">${
             esc((settings.fatores_m || 'Sedentário:1.40|Leve:1.56|Moderado:1.78|Intenso:2.10').split('|').join('\n'))}</textarea></div>
         <button class="btn ouro" style="margin-top:12px" id="salvarFat">Salvar fatores</button>
+
+        <hr style="border:0;border-top:1px solid var(--linha);margin:18px 0">
+        <h3>Listas e textos</h3>
+        <p style="font-size:13px;color:var(--txt-2);margin:6px 0 10px">
+          O que o sistema usa em vários lugares e você pode mudar sem mexer no código.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn ghost" onclick="telaObjetivos()">Objetivos</button>
+          <button class="btn ghost" onclick="telaPerguntas()">Perguntas do formulário</button>
+          <button class="btn ghost" onclick="telaInbodyTextos()">Textos do InBody</button>
+        </div>
       </div>
 
       <div class="card">
@@ -2279,19 +2629,31 @@ async function telaConfig() {
           Substitui os dois Google Forms. Quem preencher entra como lead no funil,
           com a anamnese já anexada à ficha e um código gerado na hora.
           A página se adapta sozinha: português ou inglês.</p>
-        <label>Link para mandar ao paciente</label>
-        <input id="linkForm" readonly onclick="this.select()"
-          value="${location.origin}/form" style="font-family:ui-monospace,monospace;font-size:12.5px">
+        <label>Endereço do formulário</label>
+        <input id="fmDominio" value="${esc(settings.form_dominio || '')}"
+          placeholder="https://form.lucaternes.com.br" style="font-family:ui-monospace,monospace;font-size:12.5px">
+        <small style="display:block;font-size:12px;color:var(--txt-2);margin-top:4px">
+          É o que vai nos links que você manda. Em branco, usa o endereço do próprio CRM.</small>
         <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
-          <button class="btn ghost mini" onclick="navigator.clipboard.writeText(location.origin+'/form');toast('Link copiado')">Copiar link</button>
+          <button class="btn ghost mini" id="fmCopiar">Copiar link</button>
           <a class="btn ghost mini" href="/form" target="_blank" style="text-decoration:none">Abrir</a>
+          <button class="btn mini" onclick="telaPerguntas()">Editar as perguntas</button>
         </div>
-        <div style="margin-top:14px"><label>Título da página</label>
-          <input id="fmTitulo" value="${esc(settings.form_titulo || '')}"></div>
-        <div style="margin-top:10px"><label>Texto de abertura</label>
-          <textarea id="fmIntro">${esc(settings.form_intro || '')}</textarea></div>
-        <div style="margin-top:10px"><label>Mensagem depois de enviar</label>
-          <textarea id="fmObrigado">${esc(settings.form_agradecimento || '')}</textarea></div>
+
+        <div style="display:flex;gap:7px;margin:16px 0 10px;flex-wrap:wrap">
+          ${[['', '🇧🇷', 'Português'], ['_en', '🇺🇸', 'English'], ['_es', '🇪🇸', 'Español']]
+            .map(([sf, b, n], k) => `<button class="btn mini ${k ? 'ghost' : 'ouro'}" data-sf="${sf}"
+              onclick="trocarIdiomaTextos('${sf}')">${b} ${n}</button>`).join('')}
+        </div>
+        ${[['', 'Português'], ['_en', 'English'], ['_es', 'Español']].map(([sf], k) => `
+          <div data-textos="${sf}" class="${k ? 'hide' : ''}">
+            <div><label>Título da página</label>
+              <input id="fmTitulo${sf}" value="${esc(settings['form_titulo' + sf] || '')}"></div>
+            <div style="margin-top:10px"><label>Texto de abertura</label>
+              <textarea id="fmIntro${sf}">${esc(settings['form_intro' + sf] || '')}</textarea></div>
+            <div style="margin-top:10px"><label>Mensagem depois de enviar</label>
+              <textarea id="fmObrigado${sf}">${esc(settings['form_agradecimento' + sf] || '')}</textarea></div>
+          </div>`).join('')}
         <button class="btn ouro" style="margin-top:12px" id="salvarForm">Salvar textos</button>
       </div>
 
@@ -2329,11 +2691,24 @@ async function telaConfig() {
     toast('Configurações salvas');
   };
 
+  const linkDoForm = () => {
+    const d = ($('#fmDominio').value || '').trim().replace(/\/+$/, '');
+    if (!d) return location.origin + '/form';
+    return /^https?:\/\//.test(d) ? d : 'https://' + d;
+  };
+  $('#fmCopiar').onclick = () => {
+    navigator.clipboard.writeText(linkDoForm());
+    toast('Link copiado: ' + linkDoForm());
+  };
   $('#salvarForm').onclick = async () => {
-    await api('/settings', { method: 'PUT', body: {
-      form_titulo: $('#fmTitulo').value, form_intro: $('#fmIntro').value,
-      form_agradecimento: $('#fmObrigado').value } });
-    toast('Textos do formulário salvos');
+    const body = { form_dominio: ($('#fmDominio').value || '').trim() };
+    ['', '_en', '_es'].forEach((sf) => {
+      body['form_titulo' + sf] = $('#fmTitulo' + sf).value;
+      body['form_intro' + sf] = $('#fmIntro' + sf).value;
+      body['form_agradecimento' + sf] = $('#fmObrigado' + sf).value;
+    });
+    await api('/settings', { method: 'PUT', body });
+    toast('Formulário salvo');
   };
 
   $('#salvarFat').onclick = async () => {
@@ -2396,3 +2771,905 @@ if (TOKEN) {
   api('/me').then(({ usuario }) => { EU = usuario; entrarApp(); })
     .catch(() => { localStorage.removeItem('crm_token'); TOKEN = ''; bootLogin(); });
 } else bootLogin();
+
+/* ==========================================================
+   CIDADE → FUSO · INSTAGRAM · POST-IT
+   ========================================================== */
+
+// "@fulano", "instagram.com/fulano" ou "fulano" viram o mesmo link
+function perfilInsta(valor) {
+  const bruto = String(valor || '').trim();
+  if (!bruto) return null;
+  const usuario = bruto
+    .replace(/^https?:\/\/(www\.)?instagram\.com\//i, '')
+    .replace(/^@/, '').replace(/[/?].*$/, '').trim();
+  if (!usuario || /\s/.test(usuario)) return null;
+  return { arroba: '@' + usuario, usuario, url: 'https://instagram.com/' + usuario };
+}
+
+// a cidade manda no fuso; digitou, o sistema busca e mostra o que achou
+function ligarCidadeFuso(idCidade, idPais, idFuso, idAviso) {
+  const cidade = $('#' + idCidade), pais = $('#' + idPais);
+  const campoFuso = $('#' + idFuso), aviso = $('#' + idAviso);
+  if (!cidade || !campoFuso) return;
+  let pendente;
+  const buscar = async () => {
+    const v = cidade.value.trim();
+    if (!v) { campoFuso.value = ''; if (aviso) aviso.textContent = 'O fuso sai da cidade — é o horário que o WhatsApp respeita.'; return; }
+    try {
+      const r = await api(`/fusos?lugar=${encodeURIComponent(v)}&pais=${encodeURIComponent(pais ? pais.value : '')}`);
+      campoFuso.value = r.fuso || '';
+      if (aviso) aviso.textContent = r.fuso
+        ? `Fuso: ${r.fuso} · agora são ${horaNoFuso(r.fuso)} lá`
+        : 'Não reconheci essa cidade — vai usar o fuso do país.';
+    } catch { /* sem rede: salva sem fuso e o país resolve */ }
+  };
+  cidade.oninput = () => { clearTimeout(pendente); pendente = setTimeout(buscar, 450); };
+  if (pais) pais.onchange = buscar;
+}
+
+function horaNoFuso(fuso) {
+  try {
+    return new Intl.DateTimeFormat('pt-BR', {
+      timeZone: fuso, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+  } catch { return '—'; }
+}
+
+/* ---------- post-it: acompanha o Luca em todas as telas ---------- */
+let POSTIT_SALVANDO = null;
+
+function iniciarPostit() {
+  const caixa = $('#postit');
+  if (!caixa) return;
+  caixa.classList.remove('hide');
+  const guardado = localStorage.getItem('crm_postit');
+  if (guardado) $('#piTexto').value = guardado;
+  if (localStorage.getItem('crm_postit_min') === '1') caixa.classList.add('min');
+
+  $('#piTexto').oninput = () => {
+    localStorage.setItem('crm_postit', $('#piTexto').value);
+    marcarPostit('salvando…');
+    clearTimeout(POSTIT_SALVANDO);
+    POSTIT_SALVANDO = setTimeout(salvarPostit, 900);
+  };
+  $('#piMin').onclick = (ev) => { ev.stopPropagation(); alternarPostit(); };
+  $('#piCabecalho').onclick = () => { if (caixa.classList.contains('min')) alternarPostit(); };
+  $('#piOk').onclick = concluirPostit;
+
+  // o que está no servidor manda: ele troca de computador e o bloco vai junto
+  api('/postit').then((r) => {
+    if (r.texto && r.texto !== $('#piTexto').value) {
+      $('#piTexto').value = r.texto;
+      localStorage.setItem('crm_postit', r.texto);
+    }
+    marcarPostit(r.texto ? 'salvo' : '');
+    pintarPostit();
+  }).catch(() => pintarPostit());
+  pintarPostit();
+}
+
+function alternarPostit() {
+  const caixa = $('#postit');
+  caixa.classList.toggle('min');
+  localStorage.setItem('crm_postit_min', caixa.classList.contains('min') ? '1' : '0');
+  if (!caixa.classList.contains('min')) $('#piTexto').focus();
+}
+
+function pintarPostit() {
+  const n = $('#piTexto').value.split('\n').filter((l) => l.trim()).length;
+  $('#piContador').textContent = n ? n + (n === 1 ? ' linha' : ' linhas') : 'vazio';
+  $('#postit').classList.toggle('cheio', n > 0);
+}
+
+function marcarPostit(txt) { $('#piEstado').textContent = txt; pintarPostit(); }
+
+async function salvarPostit() {
+  try {
+    await api('/postit', { method: 'PUT', body: { texto: $('#piTexto').value } });
+    marcarPostit('salvo');
+  } catch { marcarPostit('salvo só neste navegador'); }
+}
+
+async function concluirPostit() {
+  if (!$('#piTexto').value.trim()) return toast('O bloco já está vazio.');
+  if (!confirm('Concluir e apagar tudo que está no bloco? Não dá para desfazer.')) return;
+  $('#piTexto').value = '';
+  localStorage.removeItem('crm_postit');
+  clearTimeout(POSTIT_SALVANDO);
+  await salvarPostit();
+  marcarPostit('');
+  toast('Bloco limpo');
+}
+
+/* ==========================================================
+   CONVERSORES — fuso, peso, altura e dólar numa tela só
+   ========================================================== */
+const FUSOS_COMUNS = [
+  ['America/Sao_Paulo', 'Brasília / São Paulo'], ['America/Manaus', 'Manaus'],
+  ['America/Rio_Branco', 'Rio Branco'], ['America/New_York', 'Nova York / Miami (leste EUA)'],
+  ['America/Chicago', 'Chicago / Texas (centro EUA)'], ['America/Denver', 'Denver (montanha)'],
+  ['America/Phoenix', 'Phoenix (sem horário de verão)'], ['America/Los_Angeles', 'Los Angeles (oeste EUA)'],
+  ['America/Anchorage', 'Anchorage'], ['Pacific/Honolulu', 'Honolulu'],
+  ['America/Toronto', 'Toronto / Montreal'], ['America/Vancouver', 'Vancouver'],
+  ['America/Bogota', 'Bogotá'], ['America/Mexico_City', 'Cidade do México'],
+  ['America/Argentina/Buenos_Aires', 'Buenos Aires'], ['Europe/Lisbon', 'Lisboa / Porto'],
+  ['Europe/London', 'Londres'], ['Europe/Madrid', 'Madri / Barcelona'],
+  ['Europe/Paris', 'Paris'], ['Europe/Berlin', 'Berlim'], ['Europe/Rome', 'Roma'],
+  ['Europe/Zurich', 'Zurique'], ['Europe/Luxembourg', 'Luxemburgo'], ['Europe/Prague', 'Praga'],
+  ['Europe/Dublin', 'Dublin'], ['Asia/Dubai', 'Dubai'], ['Asia/Tokyo', 'Tóquio'],
+  ['Australia/Sydney', 'Sydney'],
+];
+
+function partesNoFuso(d, fuso) {
+  const f = new Intl.DateTimeFormat('en-CA', {
+    timeZone: fuso, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false, weekday: 'short' });
+  const o = {};
+  f.formatToParts(d).forEach((p) => { o[p.type] = p.value; });
+  return o;
+}
+// diferença real entre dois fusos no instante dado (respeita horário de verão)
+function difHoras(fusoA, fusoB, quando) {
+  const iso = (f) => {
+    const p = partesNoFuso(quando, f);
+    return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour === 24 ? 0 : +p.hour, +p.minute);
+  };
+  return (iso(fusoB) - iso(fusoA)) / 3600000;
+}
+const DIA_SEMANA = { Mon: 'seg', Tue: 'ter', Wed: 'qua', Thu: 'qui', Fri: 'sex', Sat: 'sáb', Sun: 'dom' };
+const nomeFuso = (f) => (FUSOS_COMUNS.find(([k]) => k === f) || [, String(f || '').split('/').pop().replace(/_/g, ' ')])[1];
+
+async function telaConversores() {
+  if (!CACHE.pacientes) CACHE.pacientes = (await api('/pacientes')).pacientes;
+  const meu = (CACHE.settings && CACHE.settings.fuso) || 'America/Sao_Paulo';
+  const comPaciente = CACHE.pacientes.filter((p) => p.fuso || p.cidade);
+
+  $('#tela').innerHTML = `
+    <div class="topo"><div><h1>Conversores</h1>
+      <p>Fuso, peso, altura e dólar — o que muda de país para país</p></div></div>
+
+    <div class="grid g2">
+      <div class="card">
+        <h3>Horário em outro fuso</h3>
+        <p style="font-size:13px;color:var(--txt-2);margin:6px 0 12px">
+          Escolha o paciente ou o fuso e veja que horas são lá quando for aqui.</p>
+        <div class="grid g2">
+          <div><label>Paciente</label><select id="fzPac">
+            <option value="">— escolher fuso à mão —</option>
+            ${comPaciente.map((p) => `<option value="${esc(p.fuso || '')}" data-cid="${esc(p.cidade || '')}">
+              ${p.cod ? esc(p.cod) + ' · ' : ''}${esc(p.apelido || p.nome)}${p.cidade ? ' — ' + esc(p.cidade) : ''}</option>`).join('')}
+          </select></div>
+          <div><label>Fuso do paciente</label><select id="fzDestino">
+            ${FUSOS_COMUNS.map(([f, r]) => `<option value="${f}">${esc(r)}</option>`).join('')}
+          </select></div>
+          <div><label>Aqui (${esc(nomeFuso(meu))})</label>
+            <input id="fzHora" type="datetime-local"></div>
+          <div><label>Lá</label><div class="kpi" style="padding:9px 12px">
+            <b id="fzSaida" style="font-size:21px">—</b>
+            <small id="fzSaidaSub" style="color:var(--txt-2)"></small></div></div>
+        </div>
+        <button class="btn ghost mini" style="margin-top:10px" id="fzAgora">Usar agora</button>
+      </div>
+
+      <div class="card">
+        <h3>Relógio dos países que ele atende</h3>
+        <p style="font-size:13px;color:var(--txt-2);margin:6px 0 12px">
+          Antes de mandar mensagem, olhe aqui se não é madrugada do outro lado.</p>
+        <div id="fzRelogios" class="viz-barras relogios"></div>
+      </div>
+
+      <div class="card">
+        <h3>Peso</h3>
+        <div class="grid g2" style="margin-top:10px">${campoPeso('cvKg', 'cvLb', null)}</div>
+        <p style="font-size:12.5px;color:var(--txt-2);margin:10px 0 0">1 kg = 2,20462 lb · 1 lb = 0,45359 kg</p>
+      </div>
+
+      <div class="card">
+        <h3>Altura</h3>
+        <div class="grid g2" style="margin-top:10px">${campoAltura('cvCm', 'cvPes', 'cvPol', null)}</div>
+        <p style="font-size:12.5px;color:var(--txt-2);margin:10px 0 0">1 pol = 2,54 cm · 1 pé = 30,48 cm</p>
+      </div>
+
+      <div class="card" style="grid-column:1/-1">
+        <h3>Moeda</h3>
+        <p style="font-size:13px;color:var(--txt-2);margin:6px 0 12px" id="cvCotacaoNota">Buscando a cotação do dia…</p>
+        <div class="grid g2">
+          <div><label>Moeda</label><select id="cvMoeda">
+            ${['USD', 'EUR', 'GBP'].map((m) => `<option value="${m}">${m}</option>`).join('')}</select></div>
+          <div><label>Cotação (R$)</label><input id="cvTaxa" type="number" step="0.0001"></div>
+          <div><label>Valor em <span id="cvRotEstr">USD</span></label><input id="cvEstr" type="number" step="0.01"></div>
+          <div><label>Valor em BRL</label><input id="cvBrl" type="number" step="0.01"></div>
+        </div>
+      </div>
+    </div>`;
+
+  const agora = () => {
+    const d = new Date();
+    const p = partesNoFuso(d, meu);
+    return `${p.year}-${p.month}-${p.day}T${p.hour === '24' ? '00' : p.hour}:${p.minute}`;
+  };
+  $('#fzHora').value = agora();
+  $('#fzAgora').onclick = () => { $('#fzHora').value = agora(); converterFuso(meu); };
+  $('#fzPac').onchange = () => {
+    const v = $('#fzPac').value;
+    if (v) {
+      if (![...$('#fzDestino').options].some((o) => o.value === v)) {
+        $('#fzDestino').insertAdjacentHTML('afterbegin', `<option value="${esc(v)}">${esc(v)}</option>`);
+      }
+      $('#fzDestino').value = v;
+    }
+    converterFuso(meu);
+  };
+  $('#fzDestino').onchange = () => converterFuso(meu);
+  $('#fzHora').oninput = () => converterFuso(meu);
+  converterFuso(meu);
+  pintarRelogios(meu);
+  setInterval(() => { if (TELA === 'conversores') pintarRelogios(meu); }, 30000);
+
+  ligarPeso('cvKg', 'cvLb');
+  ligarAltura('cvCm', 'cvPes', 'cvPol');
+  ligarMoeda();
+}
+
+function converterFuso(meu) {
+  const destino = $('#fzDestino').value;
+  const v = $('#fzHora').value;
+  if (!v || !destino) return;
+  // monta o instante real: o que ele digitou é horário DELE
+  const [data, hora] = v.split('T');
+  const [a, m, d] = data.split('-').map(Number);
+  const [hh, mm] = hora.split(':').map(Number);
+  let palpite = Date.UTC(a, m - 1, d, hh, mm);
+  for (let i = 0; i < 3; i++) {
+    const p = partesNoFuso(new Date(palpite), meu);
+    const obtido = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour === 24 ? 0 : +p.hour, +p.minute);
+    palpite += Date.UTC(a, m - 1, d, hh, mm) - obtido;
+  }
+  const quando = new Date(palpite);
+  const p = partesNoFuso(quando, destino);
+  const dif = difHoras(meu, destino, quando);
+  const mesmoDia = `${p.year}-${p.month}-${p.day}` === data;
+  $('#fzSaida').textContent = `${p.hour === '24' ? '00' : p.hour}:${p.minute}`;
+  $('#fzSaidaSub').textContent =
+    `${DIA_SEMANA[p.weekday] || p.weekday} ${p.day}/${p.month}${mesmoDia ? '' : ' (outro dia)'} · ` +
+    (dif === 0 ? 'mesmo horário' : `${dif > 0 ? '+' : ''}${dif}h em relação a você`);
+}
+
+function pintarRelogios(meu) {
+  const alvo = $('#fzRelogios');
+  if (!alvo) return;
+  const agora = new Date();
+  const lista = ['America/Sao_Paulo', 'America/New_York', 'America/Chicago', 'America/Denver',
+    'America/Los_Angeles', 'Europe/Lisbon', 'Europe/London', 'Europe/Prague'];
+  alvo.innerHTML = lista.map((f) => {
+    const p = partesNoFuso(agora, f);
+    const h = Number(p.hour === '24' ? 0 : p.hour);
+    const dormindo = h < 8 || h >= 21;
+    const rotulo = (FUSOS_COMUNS.find(([k]) => k === f) || [, f])[1];
+    return `<div class="viz-linha">
+      <span class="viz-rot">${esc(rotulo)}${f === meu ? ' <b>(você)</b>' : ''}</span>
+      <span class="viz-trilho"><i style="width:${(h / 24) * 100}%;background:${dormindo ? '#8FA3B8' : '#1E4062'}"></i></span>
+      <b class="viz-val" style="color:${dormindo ? 'var(--alerta)' : 'var(--txt)'}">
+        ${p.hour === '24' ? '00' : p.hour}:${p.minute}${dormindo ? ' 🌙' : ''}</b>
+    </div>`;
+  }).join('');
+}
+
+async function ligarMoeda() {
+  const taxa = $('#cvTaxa'), estr = $('#cvEstr'), brl = $('#cvBrl'), moeda = $('#cvMoeda');
+  const buscar = async () => {
+    $('#cvRotEstr').textContent = moeda.value;
+    try {
+      const r = await api(`/cotacao?moeda=${moeda.value}&dia=${hojeISO()}`);
+      taxa.value = Number(r.taxa || 0).toFixed(4);
+      const emBR = Number(r.taxa || 0).toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+      $('#cvCotacaoNota').textContent =
+        `Cotação de ${dataBR(r.dia || hojeISO())}: 1 ${moeda.value} = R$ ${emBR}. Dá para corrigir à mão.`;
+    } catch {
+      $('#cvCotacaoNota').textContent = 'Não consegui buscar a cotação agora — digite a taxa à mão.';
+    }
+    daEstrangeira();
+  };
+  const daEstrangeira = () => {
+    const t = Number(taxa.value) || 0;
+    if (estr.value !== '' && t) brl.value = (Number(estr.value) * t).toFixed(2);
+  };
+  const daBrl = () => {
+    const t = Number(taxa.value) || 0;
+    if (brl.value !== '' && t) estr.value = (Number(brl.value) / t).toFixed(2);
+  };
+  estr.oninput = daEstrangeira;
+  brl.oninput = daBrl;
+  taxa.oninput = daEstrangeira;
+  moeda.onchange = buscar;
+  await buscar();
+}
+
+/* ==========================================================
+   INBODY — a planilha de medições e a tela de apresentação
+   A entrada é a mesma planilha que ele preenche hoje; os cinco
+   gráficos saem dela. A apresentação abre por cima de tudo,
+   porque é o que ele vira para o paciente no atendimento.
+   ========================================================== */
+const INBODY_METRICAS = [
+  { campo: 'peso', rot: 'Peso', unidade: 'kg', bom: 'baixo', cfg: 'inbody_texto_peso',
+    titulo: 'Peso' },
+  { campo: 'massa_muscular', rot: 'Massa Muscular Esquelética', unidade: 'kg', bom: 'alto',
+    cfg: 'inbody_texto_musculo', titulo: 'Massa Muscular Esquelética' },
+  { campo: 'gordura_kg', rot: 'Massa de Gordura Corporal', unidade: 'kg', bom: 'baixo',
+    cfg: 'inbody_texto_gordura', titulo: 'Massa de Gordura Corporal' },
+  { campo: 'gordura_pct', rot: '% de Gordura Corporal', unidade: '%', bom: 'baixo',
+    cfg: 'inbody_texto_percentual', titulo: '% de Gordura Corporal' },
+  { campo: 'gordura_visceral', rot: 'Nível de Gordura Visceral', unidade: '', bom: 'baixo',
+    cfg: 'inbody_texto_visceral', titulo: 'Nível de Gordura Visceral' },
+];
+const INBODY_MAX = 12;
+const nnum = (v) => (v == null || v === '' ? null : Number(v));
+const fmtNum = (v, casas = 1) => (v == null ? '—'
+  : Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: casas }));
+const dataCurta = (d) => String(d || '').slice(0, 10).split('-').reverse().slice(0, 2).join('.');
+
+let INBODY = null;
+
+async function carregarInbody(pacienteId) {
+  INBODY = await api('/inbody?paciente_id=' + pacienteId);
+  return INBODY;
+}
+
+function blocoInbody(pacienteId, p) {
+  const ligado = p.inbody_ativo === 1;
+  if (!ligado) {
+    return `
+      <div class="card" style="text-align:center;padding:34px 20px">
+        <h3 style="margin-bottom:6px">InBody desligado para este paciente</h3>
+        <p style="font-size:13.5px;color:var(--txt-2);max-width:460px;margin:0 auto 18px">
+          Ligue para registrar as medições da balança (peso, massa muscular, gordura e
+          gordura visceral) e abrir a tela de evolução que você mostra no atendimento.</p>
+        <button class="btn ouro" onclick="ligarInbody(${pacienteId})">Ativar o InBody</button>
+      </div>`;
+  }
+  return `<div id="inbodyArea"><p class="vazio">Carregando medições…</p></div>`;
+}
+
+async function ligarInbody(pacienteId) {
+  await api('/inbody/config', { method: 'PUT', body: { paciente_id: pacienteId, inbody_ativo: 1 } });
+  toast('InBody ativado');
+  abrirPaciente(pacienteId, 'inbody');
+}
+
+async function pintarInbody(pacienteId) {
+  const alvo = $('#inbodyArea');
+  if (!alvo) return;
+  const d = await carregarInbody(pacienteId);
+  const m = d.medicoes;
+  const cab = d.cabecalho;
+
+  const linha = (x) => `
+    <tr>
+      <td><b>${dataBR(x.data)}</b>${x.hora ? `<small style="color:var(--txt-2)"> ${esc(x.hora)}</small>` : ''}
+        ${x.obs ? `<br><small style="color:var(--txt-2)">${esc(x.obs)}</small>` : ''}</td>
+      <td>${fmtNum(x.peso)}</td>
+      <td>${fmtNum(x.massa_muscular)}</td>
+      <td>${fmtNum(x.gordura_kg)}</td>
+      <td>${fmtNum(x.gordura_pct)}</td>
+      <td>${fmtNum(x.gordura_visceral, 0)}</td>
+      <td style="white-space:nowrap;text-align:right">
+        <button class="btn mini ghost" onclick="formMedicao(${pacienteId},${x.id})">Editar</button>
+        <button class="btn mini perigo" onclick="excluirMedicao(${pacienteId},${x.id})">×</button></td>
+    </tr>`;
+
+  alvo.innerHTML = `
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+        <h3 style="margin:0;flex:1">Entrada de dados <span class="tag">${m.length}/${INBODY_MAX}</span></h3>
+        <button class="btn ghost mini" onclick="configInbody(${pacienteId})">Cabeçalho</button>
+        <button class="btn mini" onclick="formMedicao(${pacienteId})"
+          ${m.length >= INBODY_MAX ? 'disabled title="Chegou nas 12 consultas"' : ''}>+ Medição</button>
+        <button class="btn ouro mini" onclick="apresentarInbody(${pacienteId})"
+          ${!m.length ? 'disabled title="Sem medição não há o que mostrar"' : ''}>▶ Apresentar</button>
+      </div>
+      <div class="inbody-cab">
+        ${[['ID e Nome', cab.id_nome], ['Altura', cab.altura_cm ? cab.altura_cm + ' cm' : '—'],
+           ['Idade', idadePor(cab.nascimento) ? idadePor(cab.nascimento) + ' anos' : '—'],
+           ['Sexo', cab.sexo === 'M' ? 'M' : cab.sexo === 'F' ? 'F' : '—'],
+           ['Peso Inicial', cab.peso_inicial ? fmtNum(cab.peso_inicial) + ' kg' : '—'],
+           ['Data Inicial', cab.data_inicial ? dataBR(cab.data_inicial) : '—'],
+           ['Plano', cab.plano || '—'], ['Modelo', cab.modelo]]
+          .map(([k, v]) => `<div><label>${k}</label><div>${esc(v)}</div></div>`).join('')}
+      </div>
+      ${!m.length ? '<p class="vazio" style="margin-top:14px">Nenhuma medição registrada ainda.</p>' : `
+      <div style="overflow:auto;margin-top:14px">
+        <table><thead><tr>
+          <th>Data</th><th>Peso</th><th>Músculo</th><th>Gordura</th>
+          <th>% Gord.</th><th>Visceral</th><th></th>
+        </tr></thead><tbody>${m.map(linha).join('')}</tbody></table>
+      </div>`}
+    </div>
+    ${m.length >= 2 ? `<div class="card">
+      <h3>Variação desde a primeira medição</h3>
+      <div class="viz-barras" style="margin-top:10px">
+        ${INBODY_METRICAS.map((me) => {
+          const vals = m.map((x) => nnum(x[me.campo])).filter((v) => v != null);
+          if (vals.length < 2) return '';
+          const dif = vals[vals.length - 1] - vals[0];
+          const melhorou = me.bom === 'alto' ? dif > 0 : dif < 0;
+          return `<div class="viz-linha">
+            <span class="viz-rot">${esc(me.rot)}</span>
+            <span class="viz-trilho"><i style="width:${Math.min(100, Math.abs(dif / vals[0]) * 400)}%;
+              background:${dif === 0 ? '#8FA3B8' : melhorou ? '#117A5B' : '#A32015'}"></i></span>
+            <b class="viz-val" style="color:${dif === 0 ? 'var(--txt-2)' : melhorou ? '#117A5B' : '#A32015'}">
+              ${dif > 0 ? '▲ ' : dif < 0 ? '▼ ' : ''}${fmtNum(Math.abs(dif))} ${esc(me.unidade)}</b>
+          </div>`;
+        }).join('')}
+      </div></div>` : ''}`;
+}
+
+function formMedicao(pacienteId, id) {
+  const x = id ? (INBODY.medicoes.find((v) => v.id === id) || {}) : {};
+  modal(id ? 'Editar medição' : 'Nova medição', `
+    <div class="grid g2">
+      <div><label>Data *</label><input id="ibData" type="date" value="${esc(x.data || hojeISO())}"></div>
+      <div><label>Hora</label><input id="ibHora" type="time" value="${esc(x.hora || '')}"></div>
+      <div><label>Peso (kg)</label><input id="ibPeso" type="number" step="0.1" value="${x.peso ?? ''}"></div>
+      <div><label>Massa muscular (kg)</label><input id="ibMM" type="number" step="0.1" value="${x.massa_muscular ?? ''}"></div>
+      <div><label>Gordura (kg)</label><input id="ibGK" type="number" step="0.1" value="${x.gordura_kg ?? ''}"></div>
+      <div><label>% de gordura</label><input id="ibGP" type="number" step="0.1" value="${x.gordura_pct ?? ''}"></div>
+      <div><label>Gordura visceral</label><input id="ibGV" type="number" step="1" value="${x.gordura_visceral ?? ''}"></div>
+      <div><label>Observação</label><input id="ibObs" placeholder="ex.: Calça Jeans*" value="${esc(x.obs || '')}"></div>
+    </div>
+    <p style="font-size:12.5px;color:var(--txt-2);margin:12px 0 0">
+      Campo em branco fica em branco no gráfico — não vira zero.</p>`, `
+    <button class="btn ghost" onclick="abrirPaciente(${pacienteId})">Cancelar</button>
+    <button class="btn ouro" id="ibSalvar">Salvar</button>`);
+
+  $('#ibSalvar').onclick = async () => {
+    const body = { paciente_id: pacienteId, data: $('#ibData').value, hora: $('#ibHora').value,
+      peso: $('#ibPeso').value, massa_muscular: $('#ibMM').value, gordura_kg: $('#ibGK').value,
+      gordura_pct: $('#ibGP').value, gordura_visceral: $('#ibGV').value, obs: $('#ibObs').value };
+    if (!body.data) return toast('Informe a data.');
+    try {
+      if (id) await api('/inbody/' + id, { method: 'PUT', body });
+      else await api('/inbody', { method: 'POST', body });
+      toast('Medição salva'); abrirPaciente(pacienteId, 'inbody');
+    } catch (e) { toast(e.message); }
+  };
+}
+
+async function excluirMedicao(pacienteId, id) {
+  if (!confirm('Excluir esta medição?')) return;
+  await api('/inbody/' + id, { method: 'DELETE' });
+  toast('Medição excluída'); abrirPaciente(pacienteId, 'inbody');
+}
+
+function configInbody(pacienteId) {
+  const p = INBODY.paciente, cfg = INBODY.config;
+  modal('Cabeçalho do InBody', `
+    <div class="grid g2">
+      <div><label>Plano (como aparece na tela)</label>
+        <input id="ibPlano" placeholder="ex.: Anual L." value="${esc(p.inbody_plano || '')}"></div>
+      <div><label>Modelo do aparelho</label>
+        <input id="ibModelo" placeholder="${esc(cfg.inbody_modelo || 'H30')}" value="${esc(p.inbody_modelo || '')}"></div>
+    </div>
+    <p style="font-size:12.5px;color:var(--txt-2);margin:12px 0 0">
+      Em branco, o plano vem do contrato ativo e o modelo vem de Configurações.</p>`, `
+    <button class="btn perigo" id="ibDesligar">Desligar o InBody</button>
+    <button class="btn ghost" onclick="abrirPaciente(${pacienteId})">Cancelar</button>
+    <button class="btn ouro" id="ibSalvarCab">Salvar</button>`);
+  $('#ibSalvarCab').onclick = async () => {
+    await api('/inbody/config', { method: 'PUT', body: { paciente_id: pacienteId,
+      inbody_ativo: 1, inbody_plano: $('#ibPlano').value, inbody_modelo: $('#ibModelo').value } });
+    toast('Cabeçalho salvo'); abrirPaciente(pacienteId, 'inbody');
+  };
+  $('#ibDesligar').onclick = async () => {
+    if (!confirm('Desligar o InBody deste paciente? As medições continuam guardadas.')) return;
+    await api('/inbody/config', { method: 'PUT', body: { paciente_id: pacienteId, inbody_ativo: 0 } });
+    toast('InBody desligado'); abrirPaciente(pacienteId, 'inbody');
+  };
+}
+
+/* ---------- a tela que ele vira para o paciente ---------- */
+function serieSvg(pontos, largura, altura) {
+  const vals = pontos.map((p) => p.v).filter((v) => v != null);
+  if (vals.length < 1) return null;
+  const min = Math.min(...vals), max = Math.max(...vals);
+  // folga em cima e embaixo para a linha não encostar na borda
+  const folga = (max - min) || Math.max(Math.abs(max) * 0.1, 1);
+  const lo = min - folga * 0.35, hi = max + folga * 0.35;
+  const px = (i) => pontos.length === 1 ? largura / 2
+    : (i / (pontos.length - 1)) * (largura - 2) + 1;
+  const py = (v) => altura - ((v - lo) / (hi - lo)) * altura;
+  const comValor = pontos.map((p, i) => ({ ...p, i })).filter((p) => p.v != null);
+  const d = comValor.map((p, k) => `${k ? 'L' : 'M'}${px(p.i).toFixed(1)},${py(p.v).toFixed(1)}`).join(' ');
+  return { d, pontos: comValor.map((p) => ({ x: px(p.i), y: py(p.v), v: p.v, data: p.data })),
+    min, max, lo, hi };
+}
+
+function cartaoInbody(me, medicoes, cfg, indice) {
+  const L = 760, A = 128;
+  const pontos = medicoes.map((m) => ({ v: nnum(m[me.campo]), data: m.data }));
+  const s = serieSvg(pontos, L, A);
+  const vals = pontos.map((p) => p.v).filter((v) => v != null);
+  const primeiro = vals[0], ultimo = vals[vals.length - 1];
+  const dif = (primeiro != null && ultimo != null && vals.length > 1) ? ultimo - primeiro : null;
+  const melhorou = dif == null ? null : (me.bom === 'alto' ? dif > 0 : dif < 0);
+  const cor = dif == null || dif === 0 ? '#5A6B7D' : melhorou ? '#117A5B' : '#A32015';
+  const seta = dif == null || dif === 0 ? '' : dif > 0 ? '▲' : '▼';
+
+  const grade = [0, 0.25, 0.5, 0.75, 1].map((f) =>
+    `<line x1="0" y1="${(f * A).toFixed(1)}" x2="${L}" y2="${(f * A).toFixed(1)}"
+       stroke="#E2E7EE" stroke-width="1"/>`).join('');
+
+  return `
+    <section class="ib-linha" style="--atraso:${indice * 0.14}s">
+      <div class="ib-rot">
+        <h3>${esc(me.titulo)}${me.unidade ? ` <span>(${esc(me.unidade)})</span>` : ''}</h3>
+        <div class="ib-agora">${fmtNum(ultimo)}<i>${esc(me.unidade)}</i></div>
+        ${dif == null ? '' : `<div class="ib-delta" style="color:${cor}">
+          ${seta} ${fmtNum(Math.abs(dif))} ${esc(me.unidade)}
+          <small>${dif === 0 ? 'sem mudança' : melhorou ? 'melhorou' : 'piorou'} desde o início</small></div>`}
+      </div>
+      <div class="ib-grafico">
+        <svg viewBox="0 0 ${L} ${A}" preserveAspectRatio="none" role="img"
+             aria-label="${esc(me.titulo)}: de ${fmtNum(primeiro)} a ${fmtNum(ultimo)} ${esc(me.unidade)}">
+          ${grade}
+          ${!s ? '' : `
+            <path class="ib-traco" d="${s.d}" fill="none" stroke="#1E4062" stroke-width="2.5"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+            ${s.pontos.map((p, k) => `
+              <circle class="ib-ponto" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}"
+                r="${k === s.pontos.length - 1 ? 7 : 5}"
+                fill="${k === s.pontos.length - 1 ? '#C9A227' : '#1E4062'}"
+                stroke="#fff" stroke-width="2.5" style="--n:${k}">
+                <title>${dataBR(p.data)}: ${fmtNum(p.v)} ${esc(me.unidade)}</title></circle>`).join('')}
+            <text class="ib-valor" x="${Math.min(L - 4, s.pontos[s.pontos.length - 1].x + 12).toFixed(1)}"
+              y="${Math.max(14, s.pontos[s.pontos.length - 1].y - 12).toFixed(1)}"
+              text-anchor="${s.pontos[s.pontos.length - 1].x > L - 90 ? 'end' : 'start'}"
+              fill="#12202F" font-size="17" font-weight="700">${fmtNum(ultimo)}</text>
+            <text class="ib-valor" x="${Math.max(4, s.pontos[0].x - 6).toFixed(1)}"
+              y="${Math.max(14, s.pontos[0].y - 12).toFixed(1)}"
+              fill="#5A6B7D" font-size="14">${fmtNum(primeiro)}</text>`}
+        </svg>
+      </div>
+      <div class="ib-texto">
+        <b>${esc(me.titulo)}:</b>
+        <p>${esc(cfg[me.cfg] || '')}</p>
+      </div>
+    </section>`;
+}
+
+async function apresentarInbody(pacienteId) {
+  const d = INBODY && INBODY.paciente && INBODY.paciente.id === pacienteId
+    ? INBODY : await carregarInbody(pacienteId);
+  const m = d.medicoes.slice(-INBODY_MAX);
+  if (!m.length) return toast('Nenhuma medição para mostrar.');
+  const cab = d.cabecalho, cfg = d.config;
+  const idade = idadePor(cab.nascimento);
+
+  const tela = document.createElement('div');
+  tela.id = 'inbodyShow';
+  tela.className = 'ib-show';
+  tela.innerHTML = `
+    <button class="ib-sair" onclick="fecharApresentacao()" title="Fechar (Esc)">✕</button>
+    <div class="ib-pagina">
+      <header class="ib-topo">
+        <div class="ib-marca"><img src="/img/logo.png" alt="" width="20" height="38">
+          <span>LUCA<i>|</i>TERNES</span></div>
+        <div class="ib-selo">InBody</div>
+      </header>
+      <div class="ib-faixa"></div>
+
+      <div class="ib-cab">
+        ${[['ID e Nome', cab.id_nome], ['Altura', cab.altura_cm ? cab.altura_cm + ' cm' : '—'],
+           ['Idade', idade ? idade + ' anos' : '—'],
+           ['Sexo', cab.sexo === 'M' ? 'M' : cab.sexo === 'F' ? 'F' : '—'],
+           ['Peso Inicial', cab.peso_inicial ? fmtNum(cab.peso_inicial) + ' kg' : '—'],
+           ['Data Inicial', cab.data_inicial ? dataBR(cab.data_inicial) : '—'],
+           ['Plano', cab.plano || '—'], ['Última', cab.data_ultima ? dataBR(cab.data_ultima) : '—']]
+          .map(([k, v]) => `<div><label>${esc(k)}</label><b>${esc(v)}</b></div>`).join('')}
+      </div>
+
+      <div class="ib-corpo">
+        ${INBODY_METRICAS.map((me, i) => cartaoInbody(me, m, cfg, i)).join('')}
+        <div class="ib-datas" style="--atraso:${INBODY_METRICAS.length * 0.14}s">
+          <div class="ib-rot"></div>
+          <div class="ib-grafico ib-eixo">
+            ${m.map((x, i) => `<span style="left:${
+              m.length === 1 ? 50 : (i / (m.length - 1)) * 100}%">${dataCurta(x.data)}</span>`).join('')}
+          </div>
+          <div class="ib-texto"></div>
+        </div>
+      </div>
+
+      <footer class="ib-rodape">${esc(cfg.inbody_rodape || '')} ${
+        cab.modelo ? '- InBody ' + esc(cab.modelo) : ''}</footer>
+    </div>`;
+  document.body.appendChild(tela);
+  document.body.classList.add('apresentando');
+  requestAnimationFrame(() => tela.classList.add('entrou'));
+  document.addEventListener('keydown', teclaApresentacao);
+}
+
+function teclaApresentacao(ev) {
+  if (ev.key === 'Escape') fecharApresentacao();
+}
+function fecharApresentacao() {
+  const t = $('#inbodyShow');
+  if (!t) return;
+  document.removeEventListener('keydown', teclaApresentacao);
+  t.classList.remove('entrou');
+  document.body.classList.remove('apresentando');
+  setTimeout(() => t.remove(), 260);
+}
+
+/* ==========================================================
+   CONFIGURAÇÕES — objetivos, perguntas do formulário e InBody
+   ========================================================== */
+const IDIOMAS_FORM = [['pt', '🇧🇷', 'Português'], ['en', '🇺🇸', 'English'], ['es', '🇪🇸', 'Español']];
+let IDIOMA_EDITOR = 'pt';
+
+/* ---------- objetivos ---------- */
+async function telaObjetivos() {
+  const lista = await carregarObjetivos(true);
+  modal('Objetivos', `
+    <p style="font-size:13.5px;color:var(--txt-2);margin:0 0 14px">
+      Essa lista aparece no cadastro do paciente, na ficha de consulta, no filtro
+      de pacientes e no formulário público. Renomear aqui renomeia nas fichas também.</p>
+    <table><thead><tr><th>Objetivo</th><th>English</th><th>Español</th><th>Na lista</th><th></th></tr></thead>
+      <tbody id="objCorpo">
+      ${lista.map((o) => `<tr data-id="${o.id}">
+        <td><input class="oNome" value="${esc(o.nome)}"></td>
+        <td><input class="oEn" value="${esc(o.nome_en || '')}"></td>
+        <td><input class="oEs" value="${esc(o.nome_es || '')}"></td>
+        <td style="text-align:center"><input type="checkbox" class="oAtivo" style="width:auto"${o.ativo ? ' checked' : ''}></td>
+        <td><button class="btn mini perigo" onclick="excluirObjetivo(${o.id})">×</button></td>
+      </tr>`).join('')}
+      </tbody></table>
+    <div class="grid g2" style="margin-top:14px;align-items:end">
+      <div><label>Novo objetivo</label><input id="objNovo" placeholder="ex.: Performance esportiva"></div>
+      <div style="display:flex;gap:8px">
+        <input id="objNovoEn" placeholder="English"><input id="objNovoEs" placeholder="Español">
+        <button class="btn" id="objAdd" style="flex:none">Adicionar</button></div>
+    </div>`, `
+    <button class="btn ghost" onclick="fecharModal()">Fechar</button>
+    <button class="btn ouro" id="objSalvar">Salvar alterações</button>`);
+
+  $('#objAdd').onclick = async () => {
+    const nome = $('#objNovo').value.trim();
+    if (!nome) return toast('Escreva o nome do objetivo.');
+    try {
+      await api('/objetivos', { method: 'POST', body: { nome,
+        nome_en: $('#objNovoEn').value.trim(), nome_es: $('#objNovoEs').value.trim() } });
+      toast('Objetivo criado'); telaObjetivos();
+    } catch (e) { toast(e.message); }
+  };
+  $('#objSalvar').onclick = async () => {
+    for (const tr of $$('#objCorpo tr')) {
+      await api('/objetivos/' + tr.dataset.id, { method: 'PUT', body: {
+        nome: $('.oNome', tr).value.trim(), nome_en: $('.oEn', tr).value.trim(),
+        nome_es: $('.oEs', tr).value.trim(), ativo: $('.oAtivo', tr).checked ? 1 : 0 } });
+    }
+    await carregarObjetivos(true);
+    fecharModal(); toast('Objetivos salvos');
+  };
+}
+
+async function excluirObjetivo(id) {
+  if (!confirm('Tirar este objetivo da lista?')) return;
+  try {
+    const r = await api('/objetivos/' + id, { method: 'DELETE' });
+    toast(r.desativado
+      ? `Está em uso por ${r.pacientes} paciente(s): foi desativado, não apagado.`
+      : 'Objetivo removido');
+    telaObjetivos();
+  } catch (e) { toast(e.message); }
+}
+
+/* ---------- perguntas do formulário ---------- */
+const TIPOS_CAMPO = [['texto', 'Texto curto'], ['longo', 'Texto longo'], ['email', 'E-mail'],
+  ['tel', 'Telefone'], ['numero', 'Número'], ['data', 'Data'], ['hora', 'Hora'],
+  ['radio', 'Escolha única (botões)'], ['select', 'Escolha única (lista)'],
+  ['pais', 'País'], ['objetivo', 'Objetivo'], ['plano', 'Plano'],
+  ['peso', 'Peso (kg e lb)'], ['altura', 'Altura (cm e pés)']];
+const CHAVES_FIXAS = ['nome', 'email', 'telefone', 'pais'];
+let FORM_DADOS = null;
+
+async function telaPerguntas() {
+  FORM_DADOS = await api('/form/campos');
+  pintarPerguntas();
+}
+
+function pintarPerguntas() {
+  const { blocos, campos } = FORM_DADOS;
+  const i = IDIOMA_EDITOR;
+  const comOpcoes = (c) => c.tipo === 'radio' || c.tipo === 'select';
+
+  const linhaCampo = (c) => `
+    <div class="card" style="margin-bottom:8px;padding:12px 14px" data-chave="${esc(c.chave)}">
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+        <span class="cod">${esc(c.chave)}</span>
+        <select class="cTipo" style="width:auto;flex:none;font-size:12.5px;padding:5px 8px"
+          ${CHAVES_FIXAS.includes(c.chave) ? 'disabled' : ''}>
+          ${TIPOS_CAMPO.map(([k, r]) => `<option value="${k}"${c.tipo === k ? ' selected' : ''}>${r}</option>`).join('')}
+        </select>
+        <label style="display:flex;gap:5px;align-items:center;font-weight:500;font-size:12.5px;margin:0">
+          <input type="checkbox" class="cObrig" style="width:auto"${c.obrigatorio ? ' checked' : ''}> obrigatória</label>
+        <label style="display:flex;gap:5px;align-items:center;font-weight:500;font-size:12.5px;margin:0">
+          <input type="checkbox" class="cAtivo" style="width:auto"${c.ativo ? ' checked' : ''}> no formulário</label>
+        <span style="margin-left:auto;display:flex;gap:5px">
+          <button class="btn mini ghost" onclick="moverPergunta('${esc(c.chave)}',-1)" title="Subir">↑</button>
+          <button class="btn mini ghost" onclick="moverPergunta('${esc(c.chave)}',1)" title="Descer">↓</button>
+          ${CHAVES_FIXAS.includes(c.chave) ? ''
+            : `<button class="btn mini perigo" onclick="excluirPergunta(${c.id},'${esc(c.chave)}')">×</button>`}
+        </span>
+      </div>
+      <input class="cRot" value="${esc(c[`rot_${i}`] || '')}" placeholder="a pergunta como o paciente lê">
+      <input class="cDica" style="margin-top:6px;font-size:13px"
+        value="${esc(c[`dica_${i}`] || '')}" placeholder="dica abaixo do campo (opcional)">
+      ${comOpcoes(c) ? `<input class="cOpcoes" style="margin-top:6px;font-size:13px"
+        value="${esc(c[`opcoes_${i}`] || '')}" placeholder="opções separadas por |">` : ''}
+    </div>`;
+
+  modal('Perguntas do formulário', `
+    <div style="display:flex;gap:7px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+      ${IDIOMAS_FORM.map(([k, b, n]) => `<button class="btn mini ${k === i ? 'ouro' : 'ghost'}"
+        onclick="trocarIdiomaEditor('${k}')">${b} ${n}</button>`).join('')}
+      <small style="color:var(--txt-2);margin-left:auto">
+        Você está editando o texto em ${IDIOMAS_FORM.find(([k]) => k === i)[2]}.
+        Sem tradução, o paciente vê o português.</small>
+    </div>
+    ${blocos.map((b) => `
+      <div style="margin-bottom:18px">
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px" data-bloco="${esc(b.chave)}">
+          <input class="bTitulo" value="${esc(b[`titulo_${i}`] || '')}"
+            style="font-weight:700;font-size:15px" placeholder="nome do bloco">
+          <label style="display:flex;gap:5px;align-items:center;font-weight:500;font-size:12.5px;margin:0;white-space:nowrap">
+            <input type="checkbox" class="bAtivo" style="width:auto"${b.ativo ? ' checked' : ''}> mostrar</label>
+        </div>
+        <input class="bAjuda" data-bloco-ajuda="${esc(b.chave)}" style="margin-bottom:10px;font-size:13px"
+          value="${esc(b[`ajuda_${i}`] || '')}" placeholder="linha de apoio do bloco">
+        ${campos.filter((c) => c.bloco_chave === b.chave).map(linhaCampo).join('')
+          || '<p class="vazio">Nenhuma pergunta neste bloco.</p>'}
+        <button class="btn ghost mini" onclick="novaPergunta('${esc(b.chave)}')">+ Pergunta neste bloco</button>
+      </div>`).join('')}`, `
+    <button class="btn ghost" onclick="fecharModal()">Fechar</button>
+    <a class="btn ghost" href="/form" target="_blank" rel="noopener" style="text-decoration:none">Ver o formulário</a>
+    <button class="btn ouro" id="pgSalvar">Salvar perguntas</button>`);
+
+  $('#pgSalvar').onclick = salvarPerguntas;
+}
+
+// lê a tela de volta para o objeto antes de qualquer ação que redesenhe
+function lerPerguntas() {
+  const i = IDIOMA_EDITOR;
+  $$('[data-bloco]').forEach((el) => {
+    const b = FORM_DADOS.blocos.find((x) => x.chave === el.dataset.bloco);
+    if (!b) return;
+    b[`titulo_${i}`] = $('.bTitulo', el).value;
+    b.ativo = $('.bAtivo', el).checked ? 1 : 0;
+  });
+  $$('[data-bloco-ajuda]').forEach((el) => {
+    const b = FORM_DADOS.blocos.find((x) => x.chave === el.dataset.blocoAjuda);
+    if (b) b[`ajuda_${i}`] = el.value;
+  });
+  $$('[data-chave]').forEach((el) => {
+    const c = FORM_DADOS.campos.find((x) => x.chave === el.dataset.chave);
+    if (!c) return;
+    c[`rot_${i}`] = $('.cRot', el).value;
+    c[`dica_${i}`] = $('.cDica', el).value;
+    const op = $('.cOpcoes', el);
+    if (op) c[`opcoes_${i}`] = op.value;
+    c.tipo = $('.cTipo', el).value;
+    c.obrigatorio = $('.cObrig', el).checked ? 1 : 0;
+    c.ativo = $('.cAtivo', el).checked ? 1 : 0;
+  });
+}
+
+// guarda o que está na tela antes de redesenhar em outro idioma
+function trocarIdiomaEditor(idioma) {
+  lerPerguntas();
+  IDIOMA_EDITOR = idioma;
+  pintarPerguntas();
+}
+
+function moverPergunta(chave, passo) {
+  lerPerguntas();
+  const c = FORM_DADOS.campos.find((x) => x.chave === chave);
+  const irmas = FORM_DADOS.campos.filter((x) => x.bloco_chave === c.bloco_chave);
+  const i = irmas.indexOf(c), j = i + passo;
+  if (j < 0 || j >= irmas.length) return;
+  const posI = c.posicao, posJ = irmas[j].posicao;
+  c.posicao = posJ; irmas[j].posicao = posI;
+  FORM_DADOS.campos.sort((a, b) => a.posicao - b.posicao);
+  pintarPerguntas();
+}
+
+async function salvarPerguntas() {
+  lerPerguntas();
+  try {
+    await api('/form/campos', { method: 'PUT', body:
+      { blocos: FORM_DADOS.blocos, campos: FORM_DADOS.campos } });
+    fecharModal(); toast('Perguntas salvas');
+  } catch (e) { toast(e.message); }
+}
+
+function novaPergunta(bloco) {
+  lerPerguntas();
+  modal('Nova pergunta', `
+    <div class="grid g2">
+      <div><label>Identificador</label><input id="npChave" placeholder="ex.: sono_qualidade">
+        <small style="display:block;font-size:12px;color:var(--txt-2);margin-top:4px">
+          Só letras, números e _. É o nome interno, o paciente não vê.</small></div>
+      <div><label>Tipo</label><select id="npTipo">
+        ${TIPOS_CAMPO.map(([k, r]) => `<option value="${k}">${r}</option>`).join('')}</select></div>
+    </div>
+    ${IDIOMAS_FORM.map(([k, b, n]) => `
+      <div style="margin-top:10px"><label>${b} Pergunta em ${n}${k === 'pt' ? ' *' : ''}</label>
+        <input id="npRot_${k}"></div>`).join('')}
+    <div style="margin-top:10px"><label>Opções (só para escolha única), separadas por |</label>
+      ${IDIOMAS_FORM.map(([k, b]) => `<input id="npOp_${k}" style="margin-top:5px;font-size:13px"
+        placeholder="${b} ex.: Sim|Não">`).join('')}</div>`, `
+    <button class="btn ghost" onclick="pintarPerguntas()">Cancelar</button>
+    <button class="btn ouro" id="npSalvar">Criar pergunta</button>`);
+
+  $('#npSalvar').onclick = async () => {
+    const body = { bloco_chave: bloco, chave: $('#npChave').value, tipo: $('#npTipo').value };
+    IDIOMAS_FORM.forEach(([k]) => {
+      body['rot_' + k] = $('#npRot_' + k).value.trim();
+      body['opcoes_' + k] = $('#npOp_' + k).value.trim();
+    });
+    if (!body.chave.trim()) return toast('Informe o identificador.');
+    if (!body.rot_pt) return toast('Escreva a pergunta em português.');
+    try {
+      await api('/form/campos', { method: 'POST', body });
+      toast('Pergunta criada'); telaPerguntas();
+    } catch (e) { toast(e.message); }
+  };
+}
+
+async function excluirPergunta(id, chave) {
+  if (!confirm(`Excluir a pergunta "${chave}" do formulário?`)) return;
+  try {
+    await api('/form/campos/' + id, { method: 'DELETE' });
+    toast('Pergunta excluída'); telaPerguntas();
+  } catch (e) { toast(e.message); }
+}
+
+/* ---------- textos do InBody ---------- */
+async function telaInbodyTextos() {
+  const { settings } = await api('/settings');
+  const campos = [
+    ['inbody_modelo', 'Modelo do aparelho (padrão)', 'H30', 0],
+    ['inbody_texto_peso', 'Explicação — Peso', '', 1],
+    ['inbody_texto_musculo', 'Explicação — Massa muscular esquelética', '', 1],
+    ['inbody_texto_gordura', 'Explicação — Massa de gordura corporal', '', 1],
+    ['inbody_texto_percentual', 'Explicação — % de gordura corporal', '', 1],
+    ['inbody_texto_visceral', 'Explicação — Gordura visceral', '', 1],
+    ['inbody_rodape', 'Rodapé da apresentação', '', 1],
+  ];
+  modal('InBody — textos da apresentação', `
+    <p style="font-size:13.5px;color:var(--txt-2);margin:0 0 14px">
+      É o que aparece ao lado de cada gráfico quando você vira a tela para o paciente.</p>
+    ${campos.map(([k, rot, ph, longo]) => `
+      <div style="margin-bottom:11px"><label>${rot}</label>
+        ${longo ? `<textarea id="ib_${k}" style="min-height:62px">${esc(settings[k] || '')}</textarea>`
+                : `<input id="ib_${k}" placeholder="${ph}" value="${esc(settings[k] || '')}">`}</div>`).join('')}`, `
+    <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
+    <button class="btn ouro" id="ibTxtSalvar">Salvar textos</button>`);
+  $('#ibTxtSalvar').onclick = async () => {
+    const body = {};
+    campos.forEach(([k]) => { body[k] = $('#ib_' + k).value; });
+    await api('/settings', { method: 'PUT', body });
+    CACHE.settings = null;
+    fecharModal(); toast('Textos do InBody salvos');
+  };
+}
+
+// alterna os três conjuntos de textos do formulário em Configurações
+function trocarIdiomaTextos(sufixo) {
+  $$('[data-textos]').forEach((d) => d.classList.toggle('hide', d.dataset.textos !== sufixo));
+  $$('[data-sf]').forEach((b) => {
+    const atual = b.dataset.sf === sufixo;
+    b.classList.toggle('ouro', atual);
+    b.classList.toggle('ghost', !atual);
+  });
+}
