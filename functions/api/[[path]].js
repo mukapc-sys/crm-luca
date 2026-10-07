@@ -225,6 +225,16 @@ async function baseFormulario(env, url) {
   return url.origin + '/form';
 }
 
+// Uma migração que não rodou não pode derrubar a ficha inteira do paciente.
+// O que é acessório volta vazio e a tela avisa, em vez de dar 500.
+async function talvez(consulta, padrao) {
+  try { return await consulta(); } catch (e) {
+    // o SQLite escreve a falta de três jeitos diferentes conforme o comando
+    if (/no such table|no such column|has no column named/i.test(String(e && e.message))) return padrao;
+    throw e;
+  }
+}
+
 async function idiomasForm(env) {
   const v = (await env.DB.prepare("SELECT value FROM settings WHERE key='form_idiomas'").first())?.value;
   const l = String(v || 'pt,en,es').split(',').map((s) => s.trim()).filter(Boolean);
@@ -1006,6 +1016,54 @@ export async function onRequest(context) {
     }
 
     // ==========================================================
+    // DIAGNÓSTICO — o que o banco ainda não tem
+    // Sem CLI, é assim que ele descobre qual migração falta rodar.
+    // ==========================================================
+    if (rota === '/diagnostico' && metodo === 'GET') {
+      const EXIGE = [
+        { migracao: 'migrate-01.sql', o_que: 'funil de vendas',
+          tabelas: ['negociacoes', 'interacoes', 'motivos_perda'], colunas: [] },
+        { migracao: 'migrate-02.sql', o_que: 'sexo e altura do paciente',
+          tabelas: [], colunas: [['pacientes', 'sexo'], ['pacientes', 'altura_cm']] },
+        { migracao: 'migrate-03.sql', o_que: 'WhatsApp',
+          tabelas: ['wa_templates', 'wa_fila'], colunas: [['pacientes', 'fuso']] },
+        { migracao: 'migrate-04.sql', o_que: 'textos do formulário',
+          tabelas: [], colunas: [] },
+        { migracao: 'migrate-05.sql', o_que: 'planos e anexos na ficha',
+          tabelas: ['anexos'], colunas: [] },
+        { migracao: 'migrate-06.sql',
+          o_que: 'objetivos, perguntas do formulário, cidade/fuso, refeições, TMB e InBody',
+          tabelas: ['objetivos', 'form_blocos', 'form_campos', 'fusos_lugar', 'inbody'],
+          colunas: [['pacientes', 'cidade'], ['pacientes', 'form_token'],
+            ['pacientes', 'inbody_ativo'], ['consultas', 'refeicoes'], ['consultas', 'tmb']] },
+      ];
+      const existe = await env.DB.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table'").all();
+      const tabelas = new Set((existe.results || []).map((x) => x.name));
+      const colunasDe = {};
+      for (const t of ['pacientes', 'consultas']) {
+        if (!tabelas.has(t)) { colunasDe[t] = new Set(); continue; }
+        const c = await env.DB.prepare(`PRAGMA table_info(${t})`).all();
+        colunasDe[t] = new Set((c.results || []).map((x) => x.name));
+      }
+      const pendentes = [];
+      for (const m of EXIGE) {
+        const faltamTabelas = m.tabelas.filter((t) => !tabelas.has(t));
+        const faltamColunas = m.colunas.filter(([t, c]) => !(colunasDe[t] || new Set()).has(c));
+        if (faltamTabelas.length || faltamColunas.length) {
+          pendentes.push({ migracao: m.migracao, o_que: m.o_que,
+            tabelas: faltamTabelas, colunas: faltamColunas.map(([t, c]) => `${t}.${c}`) });
+        }
+      }
+      return json({
+        ok: pendentes.length === 0,
+        pendentes,
+        r2: !!env.ARQUIVOS,
+        tabelas: [...tabelas].sort(),
+      });
+    }
+
+    // ==========================================================
     // INBODY — a planilha de medições e a tela de apresentação
     // ==========================================================
     if (rota === '/inbody' && metodo === 'GET') {
@@ -1298,10 +1356,9 @@ export async function onRequest(context) {
       // Uma passada por tabela em vez de subconsulta por linha: com algumas
       // centenas de pacientes a diferença é de segundos para milissegundos.
       let sql = `
-        SELECT pa.id, pa.cod, pa.nome, pa.apelido, pa.pais, pa.cidade, pa.fuso,
-               pa.telefone, pa.email, pa.instagram,
+        SELECT pa.id, pa.cod, pa.nome, pa.apelido, pa.pais, pa.telefone, pa.email,
                pa.objetivo, pa.status, pa.sexo, pa.altura_cm, pa.nascimento, pa.created_at,
-               pa.inbody_ativo,
+               COLUNAS_NOVAS
                c.codigo_plano  AS plano_atual,
                c.data_final    AS data_final,
                uc.ultima_consulta,
@@ -1329,7 +1386,11 @@ export async function onRequest(context) {
       if (plano) { sql += ' AND c.codigo_plano=?'; args.push(plano); }
       sql += ' ORDER BY pa.nome COLLATE NOCASE ASC LIMIT ?'; args.push(limite);
 
-      const r = await env.DB.prepare(sql).bind(...args).all();
+      const NOVAS = 'pa.cidade, pa.fuso, pa.instagram, pa.inbody_ativo,';
+      let r = await talvez(
+        () => env.DB.prepare(sql.replace('COLUNAS_NOVAS', NOVAS)).bind(...args).all(), null);
+      // banco ainda sem o migrate-06: a tela abre sem os campos novos
+      if (!r) r = await env.DB.prepare(sql.replace('COLUNAS_NOVAS', '')).bind(...args).all();
       return json({ pacientes: r.results || [] });
     }
 
@@ -1337,18 +1398,23 @@ export async function onRequest(context) {
       const b = body;
       if (!b.nome) return bad('Nome é obrigatório.');
       // fuso vem da cidade; só respeita o que foi escolhido à mão se veio preenchido
-      const fuso = b.fuso || await fusoDoLugar(env, b.cidade, b.pais);
-      const res = await env.DB.prepare(
-        `INSERT INTO pacientes (cod,nome,apelido,pais,cidade,fuso,email,telefone,instagram,nascimento,cpf,
-             profissao,endereco,objetivo,status,parceiro_id,indicacao,obs,sexo,altura_cm)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-      ).bind(b.cod || null, b.nome.trim(), b.apelido || null, b.pais || 'Brasil',
-        b.cidade || null, fuso || null, b.email || null,
-        b.telefone || null, b.instagram || null, b.nascimento || null, b.cpf || null,
+      const fuso = await talvez(() => fusoDoLugar(env, b.cidade, b.pais), null) || b.fuso || null;
+      const comuns = [b.cod || null, b.nome.trim(), b.apelido || null, b.pais || 'Brasil',
+        b.email || null, b.telefone || null, b.instagram || null, b.nascimento || null, b.cpf || null,
         b.profissao || null, b.endereco || null, b.objetivo || null, b.status || 'ativo',
         b.parceiro_id || null, b.indicacao || null, b.obs || null,
-        b.sexo || null, b.altura_cm ? num(b.altura_cm) : null).run();
-      return json({ ok: true, id: res.meta.last_row_id, fuso: fuso || null });
+        b.sexo || null, b.altura_cm ? num(b.altura_cm) : null];
+      let res = await talvez(() => env.DB.prepare(
+        `INSERT INTO pacientes (cod,nome,apelido,pais,email,telefone,instagram,nascimento,cpf,
+             profissao,endereco,objetivo,status,parceiro_id,indicacao,obs,sexo,altura_cm,cidade,fuso)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      ).bind(...comuns, b.cidade || null, fuso).run(), null);
+      // banco ainda sem o migrate-06: cadastra sem cidade e fuso
+      if (!res) res = await env.DB.prepare(
+        `INSERT INTO pacientes (cod,nome,apelido,pais,email,telefone,instagram,nascimento,cpf,
+             profissao,endereco,objetivo,status,parceiro_id,indicacao,obs,sexo,altura_cm)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(...comuns).run();
+      return json({ ok: true, id: res.meta.last_row_id, fuso });
     }
 
     if (rota.startsWith('/pacientes/') && seg.length === 2 && metodo === 'GET') {
@@ -1365,9 +1431,9 @@ export async function onRequest(context) {
         'SELECT * FROM consultas WHERE paciente_id=? ORDER BY data DESC').bind(id).all();
       const anamnese = await env.DB.prepare(
         'SELECT * FROM anamneses WHERE paciente_id=? ORDER BY id DESC LIMIT 1').bind(id).first();
-      const anexos = await env.DB.prepare(
+      const anexos = await talvez(() => env.DB.prepare(
         `SELECT id,tipo,titulo,data_ref,obs,arquivo_nome,mime,tamanho,created_at
-           FROM anexos WHERE paciente_id=? ORDER BY data_ref DESC, id DESC`).bind(id).all();
+           FROM anexos WHERE paciente_id=? ORDER BY data_ref DESC, id DESC`).bind(id).all(), null);
       return json({
         paciente: p,
         contratos: contratos.results || [],
@@ -1375,24 +1441,28 @@ export async function onRequest(context) {
         pagamentos: pagamentos.results || [],
         consultas: consultas.results || [],
         anamnese: anamnese || null,
-        anexos: anexos.results || [],
+        anexos: anexos ? (anexos.results || []) : [],
+        faltando: anexos ? [] : ['anexos'],
       });
     }
 
     if (rota.startsWith('/pacientes/') && seg.length === 2 && metodo === 'PUT') {
       const id = seg[1]; const b = body;
-      const fuso = b.fuso || await fusoDoLugar(env, b.cidade, b.pais);
-      await env.DB.prepare(
-        `UPDATE pacientes SET cod=?,nome=?,apelido=?,pais=?,cidade=?,fuso=?,email=?,telefone=?,instagram=?,
-            nascimento=?,cpf=?,profissao=?,endereco=?,objetivo=?,status=?,parceiro_id=?,indicacao=?,obs=?,
-            sexo=?,altura_cm=?,updated_at=datetime('now') WHERE id=?`
-      ).bind(b.cod || null, b.nome, b.apelido || null, b.pais || 'Brasil',
-        b.cidade || null, fuso || null, b.email || null,
-        b.telefone || null, b.instagram || null, b.nascimento || null, b.cpf || null,
+      const fuso = await talvez(() => fusoDoLugar(env, b.cidade, b.pais), null) || b.fuso || null;
+      const comuns = [b.cod || null, b.nome, b.apelido || null, b.pais || 'Brasil',
+        b.email || null, b.telefone || null, b.instagram || null, b.nascimento || null, b.cpf || null,
         b.profissao || null, b.endereco || null, b.objetivo || null, b.status || 'ativo',
         b.parceiro_id || null, b.indicacao || null, b.obs || null,
-        b.sexo || null, b.altura_cm ? num(b.altura_cm) : null, id).run();
-      return json({ ok: true, fuso: fuso || null });
+        b.sexo || null, b.altura_cm ? num(b.altura_cm) : null];
+      const BASE = `UPDATE pacientes SET cod=?,nome=?,apelido=?,pais=?,email=?,telefone=?,instagram=?,
+            nascimento=?,cpf=?,profissao=?,endereco=?,objetivo=?,status=?,parceiro_id=?,indicacao=?,obs=?,
+            sexo=?,altura_cm=?`;
+      const feito = await talvez(() => env.DB.prepare(
+        `${BASE},cidade=?,fuso=?,updated_at=datetime('now') WHERE id=?`)
+        .bind(...comuns, b.cidade || null, fuso, id).run(), null);
+      if (!feito) await env.DB.prepare(`${BASE},updated_at=datetime('now') WHERE id=?`)
+        .bind(...comuns, id).run();
+      return json({ ok: true, fuso });
     }
 
     // link de anamnese com token: usado para mandar o formulário a quem já

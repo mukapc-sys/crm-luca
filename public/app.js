@@ -121,6 +121,7 @@ async function entrarApp() {
   PLANOS = (await api('/planos')).planos;
   await carregarObjetivos(true);
   iniciarPostit();
+  conferirBanco();
   irPara('home');
 }
 
@@ -798,8 +799,21 @@ function pintarPacientes() {
 }
 
 /* ---------- modal genérico ---------- */
-function modal(titulo, corpo, pe = '') {
-  fecharModal();
+/* Pilha de modais: abrir a calculadora por cima da ficha não pode jogar
+   fora o que ele já preencheu. O modal de baixo fica escondido no DOM,
+   com os campos intactos, e volta inteiro quando o de cima fecha.
+   A trava avisa antes de fechar qualquer tela com coisa não salva. */
+const PILHA_MODAL = [];
+
+function modal(titulo, corpo, pe = '', opt = {}) {
+  if (opt.empilhar) {
+    const atual = $('#modalAtual');
+    if (atual) { atual.removeAttribute('id'); atual.classList.add('hide'); PILHA_MODAL.push(atual); }
+  } else {
+    const atual = $('#modalAtual');
+    if (atual) atual.remove();
+    while (PILHA_MODAL.length) PILHA_MODAL.pop().remove();
+  }
   const el = document.createElement('div');
   el.className = 'modal'; el.id = 'modalAtual';
   el.innerHTML = `<div class="modal-box">
@@ -811,7 +825,46 @@ function modal(titulo, corpo, pe = '') {
   document.body.appendChild(el);
   return el;
 }
-const fecharModal = () => { const m = $('#modalAtual'); if (m) m.remove(); };
+
+// a tela registra o que considera "perdido" se fechar agora
+function travarModal(aviso) {
+  const m = $('#modalAtual');
+  if (m) m._trava = aviso;
+}
+
+/* Tranca a tela comparando tudo que está nos campos com o estado inicial.
+   Devolve a função para chamar depois de salvar, que libera o fechamento. */
+function travarSeMexer(mensagem) {
+  const m = $('#modalAtual');
+  if (!m) return () => {};
+  const ler = () => JSON.stringify($$('input,select,textarea', m).map((e) =>
+    (e.type === 'checkbox' || e.type === 'radio') ? (e.checked ? 1 : 0) : e.value));
+  let base = ler();
+  m._trava = () => (ler() === base ? null : mensagem);
+  return () => { base = ler(); m._trava = null; };
+}
+
+const AVISO_SAIR = (o) =>
+  `Você preencheu ${o} e ainda não salvou.\n\nSair agora perde o que foi digitado. Quer sair mesmo assim?`;
+function destravarModal() {
+  const m = $('#modalAtual');
+  if (m) m._trava = null;
+}
+
+// devolve false quando ele desistiu de fechar
+function fecharModal(forcar) {
+  const m = $('#modalAtual');
+  if (!m) return true;
+  if (!forcar && typeof m._trava === 'function') {
+    const aviso = m._trava();
+    if (aviso && !confirm(aviso)) return false;
+  }
+  m.remove();
+  const anterior = PILHA_MODAL.pop();
+  if (anterior) { anterior.id = 'modalAtual'; anterior.classList.remove('hide'); }
+  return true;
+}
+
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') fecharModal(); });
 
 /* ---------- ficha do paciente ---------- */
@@ -1002,6 +1055,7 @@ async function formPaciente(id) {
 
   ligarAltura('pAltura', 'pAltPes', 'pAltPol');
   ligarCidadeFuso('pCidade', 'pPais', 'pFuso', 'pFusoAviso');
+  const liberar = travarSeMexer(AVISO_SAIR('o cadastro'));
 
   $('#salvarPac').onclick = async () => {
     const body = {
@@ -1018,7 +1072,7 @@ async function formPaciente(id) {
     try {
       if (id) await api('/pacientes/' + id, { method: 'PUT', body });
       else await api('/pacientes', { method: 'POST', body });
-      fecharModal(); toast('Paciente salvo'); if (TELA === 'pacientes') carregarPacientes(true); else telaHome();
+      liberar(); fecharModal(true); toast('Paciente salvo'); if (TELA === 'pacientes') carregarPacientes(true); else telaHome();
     } catch (e) { toast(e.message); }
   };
 }
@@ -1163,7 +1217,7 @@ async function editarAnexo(id, pacienteId) {
     <p style="font-size:12.5px;color:var(--txt-2);margin:10px 0 0">
       Arquivo: ${esc(a.arquivo_nome)} · ${tamanhoLegivel(a.tamanho)}.
       Para trocar o arquivo, anexe um novo — o histórico fica.</p>`, `
-    <button class="btn ghost" onclick="abrirPaciente(${pacienteId})">Cancelar</button>
+    <button class="btn ghost" onclick="if(fecharModal())abrirPaciente(${pacienteId})">Cancelar</button>
     <button class="btn ouro" id="edSalvar">Salvar</button>`);
   $('#edSalvar').onclick = async () => {
     await api('/anexos/' + id, { method: 'PUT', body: {
@@ -1311,7 +1365,7 @@ async function abrirConsulta(pacienteId, consultaId) {
 
   modal(consultaId ? 'Ficha de consulta' : 'Nova ficha de consulta', corpo, `
     ${consultaId ? `<button class="btn perigo" onclick="excluirConsulta(${consultaId},${pacienteId})">Excluir</button>` : ''}
-    <button class="btn ghost" onclick="abrirCalculadora(${pacienteId})">Calculadora</button>
+    <button class="btn ghost" onclick="calculadoraDaFicha(${pacienteId})">Calculadora</button>
     <button class="btn ghost" onclick="window.print()">Imprimir</button>
     <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
     <button class="btn ouro" id="salvarCons">Salvar ficha</button>`);
@@ -1320,6 +1374,8 @@ async function abrirConsulta(pacienteId, consultaId) {
 
   const kg = $('#cKg'), lbs = $('#cLbs');
   let ULTIMO = { tmb: null, get: null };
+
+  const liberar = travarSeMexer(AVISO_SAIR('a ficha'));
 
   function recalcular() {
     if (anterior && $('#cDelta')) {
@@ -1349,7 +1405,7 @@ async function abrirConsulta(pacienteId, consultaId) {
     const semPeso = !Number(kg.value);
     $('#cTmbNota').innerHTML = noCadastro.length
       ? `Falta <b>${noCadastro.join(', ')}</b> no cadastro do paciente.
-         <a href="#" onclick="event.preventDefault();fecharModal();formPaciente(${p.id})">Completar agora</a>`
+         <a href="#" onclick="event.preventDefault();if(fecharModal())formPaciente(${p.id})">Completar agora</a>`
       : semPeso ? 'Preencha o peso acima e a TMB aparece aqui.'
       : `${idade} anos na data da ficha · Harris-Benedict × ${fator}` +
         (anterior && anterior.tmb ? ` · na ficha anterior era ${fmtKcal(kcal(anterior.tmb))}` : '');
@@ -1376,16 +1432,28 @@ async function abrirConsulta(pacienteId, consultaId) {
     try {
       if (consultaId) await api('/consultas/' + consultaId, { method: 'PUT', body });
       else await api('/consultas', { method: 'POST', body });
-      fecharModal(); toast('Ficha salva');
+      liberar();
+      fecharModal(true); toast('Ficha salva');
       if (TELA === 'pacientes') carregarPacientes(true); else if (TELA === 'home') telaHome();
     } catch (e) { toast(e.message); }
   };
 }
 
+// Abre por cima da ficha, com o peso que ele acabou de digitar. Fechando,
+// a ficha volta exatamente como estava, e o nível de atividade pode voltar junto.
+function calculadoraDaFicha(pacienteId) {
+  abrirCalculadora(pacienteId, {
+    empilhar: true,
+    peso: $('#cKg') ? $('#cKg').value : '',
+    fator: $('#cFator') ? $('#cFator').value : '',
+    data: $('#cData') ? $('#cData').value : '',
+  });
+}
+
 async function excluirConsulta(id, pid) {
   if (!confirm('Excluir esta ficha?')) return;
   await api('/consultas/' + id, { method: 'DELETE' });
-  fecharModal(); toast('Ficha excluída'); abrirPaciente(pid);
+  destravarModal(); fecharModal(true); toast('Ficha excluída'); abrirPaciente(pid);
 }
 
 /* ==========================================================
@@ -1688,7 +1756,7 @@ const kcal = (v) => Math.round(v * 100) / 100;
 const fmtKcal = (v) => v == null ? '—'
   : v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' kcal';
 
-async function abrirCalculadora(pacienteId) {
+async function abrirCalculadora(pacienteId, de = {}) {
   if (!CACHE.settings) CACHE.settings = (await api('/settings')).settings;
 
   let p = null, ultima = null;
@@ -1698,8 +1766,10 @@ async function abrirCalculadora(pacienteId) {
     ultima = (d.consultas || []).find((c) => c.peso_kg);
   }
   const sexo0 = (p && p.sexo) || 'F';
-  const idade0 = p ? idadePor(p.nascimento) : null;
-  const peso0 = ultima ? ultima.peso_kg : null;
+  // vindo da ficha, a idade é a da data daquela consulta
+  const idade0 = p ? idadePor(p.nascimento, de.data || undefined) : null;
+  const pesoSalvo = ultima ? ultima.peso_kg : null;
+  const peso0 = Number(de.peso) > 0 ? Number(de.peso) : pesoSalvo;
   const alt0 = p && p.altura_cm ? p.altura_cm : null;
 
   const corpo = `
@@ -1708,33 +1778,35 @@ async function abrirCalculadora(pacienteId) {
         <div style="font-size:12.5px;color:var(--txt-2)">
           ${idade0 ? idade0 + ' anos' : '<b style="color:var(--erro)">sem data de nascimento</b>'} ·
           ${alt0 ? alt0 + ' cm' : '<b style="color:var(--erro)">sem altura</b>'} ·
-          ${peso0 ? peso0 + ' kg (ficha de ' + dataBR(ultima.data) + ')' : '<b style="color:var(--erro)">sem peso registrado</b>'}
+          ${Number(de.peso) > 0 ? de.peso + ' kg (digitado na ficha)'
+            : pesoSalvo ? pesoSalvo + ' kg (ficha de ' + dataBR(ultima.data) + ')'
+            : '<b style="color:var(--erro)">sem peso registrado</b>'}
         </div></div>
-      <button class="btn ghost mini" onclick="fecharModal();formPaciente(${p.id})">Completar cadastro</button>
+      <button class="btn ghost mini" onclick="if(fecharModal())formPaciente(${p.id})">Completar cadastro</button>
     </div>` : ''}
 
     <div class="grid g2">
-      <div><label>Sexo</label><select id="cSexo">
+      <div><label>Sexo</label><select id="kSexo">
         <option value="F"${sexo0 === 'F' ? ' selected' : ''}>Feminino</option>
         <option value="M"${sexo0 === 'M' ? ' selected' : ''}>Masculino</option></select></div>
-      <div><label>Idade (anos)</label><input id="cIdade" type="number" min="1" max="120" value="${idade0 || ''}"></div>
-      ${campoPeso('cKg', 'cLb', peso0)}
-      ${campoAltura('cCm', 'cPes', 'cPol', alt0)}
+      <div><label>Idade (anos)</label><input id="kIdade" type="number" min="1" max="120" value="${idade0 || ''}"></div>
+      ${campoPeso('kKg', 'kLb', peso0)}
+      ${campoAltura('kCm', 'kPes', 'kPol', alt0)}
       <div style="grid-column:1/-1"><label>Nível de atividade</label>
-        <select id="cNivel"></select></div>
+        <select id="kNivel"></select></div>
     </div>
 
     <div class="grid g2" style="margin-top:14px">
       <div class="kpi"><span>Taxa de metabolismo basal</span>
-        <b id="cTmb" style="font-size:25px">—</b>
+        <b id="kTmb" style="font-size:25px">—</b>
         <small style="color:var(--txt-2)">energia em repouso absoluto</small></div>
       <div class="kpi" style="border-color:var(--ouro);border-width:2px">
         <span>Gasto energético total</span>
-        <b id="cGet" style="font-size:25px">—</b>
-        <small id="cGetSub" style="color:var(--txt-2)">TMB × fator de atividade</small></div>
+        <b id="kGet" style="font-size:25px">—</b>
+        <small id="kGetSub" style="color:var(--txt-2)">TMB × fator de atividade</small></div>
     </div>
 
-    <div id="cAjuste" class="card hide" style="margin-top:12px">
+    <div id="kAjuste" class="card hide" style="margin-top:12px">
       <label>Ajuste para o objetivo</label>
       <div class="viz-barras" style="margin-top:6px"></div>
     </div>
@@ -1747,30 +1819,32 @@ async function abrirCalculadora(pacienteId) {
     </p>`;
 
   modal('Calculadora de metabolismo', corpo, `
-    ${p ? `<button class="btn ghost" id="cSalvar">Salvar no cadastro</button>` : ''}
-    <button class="btn ghost" onclick="fecharModal()">Fechar</button>`);
+    ${p ? `<button class="btn ghost" id="kSalvar">Salvar no cadastro</button>` : ''}
+    ${de.empilhar ? '<button class="btn ouro" id="kUsar">Usar na ficha</button>' : ''}
+    <button class="btn ghost" onclick="fecharModal()">${de.empilhar ? 'Voltar à ficha' : 'Fechar'}</button>`,
+    { empilhar: !!de.empilhar });
 
   const el = (id) => $('#' + id);
 
   function montaNiveis() {
-    const fs = fatores(el('cSexo').value);
-    const atual = el('cNivel').value;
-    el('cNivel').innerHTML = fs.map((f) =>
+    const fs = fatores(el('kSexo').value);
+    const atual = el('kNivel').value;
+    el('kNivel').innerHTML = fs.map((f) =>
       `<option value="${f.fator}"${String(f.fator) === atual ? ' selected' : ''}>${esc(f.nome)} (${f.fator})</option>`).join('');
-    if (!atual) el('cNivel').selectedIndex = Math.min(1, fs.length - 1);
+    if (!atual) el('kNivel').selectedIndex = Math.min(1, fs.length - 1);
   }
 
   function calcular() {
-    const sexo = el('cSexo').value;
-    const tmb = tmbHarrisBenedict(sexo, Number(el('cKg').value), Number(el('cCm').value), Number(el('cIdade').value));
-    const fator = Number(el('cNivel').value) || 0;
-    el('cTmb').textContent = tmb == null ? '—' : fmtKcal(kcal(tmb));
+    const sexo = el('kSexo').value;
+    const tmb = tmbHarrisBenedict(sexo, Number(el('kKg').value), Number(el('kCm').value), Number(el('kIdade').value));
+    const fator = Number(el('kNivel').value) || 0;
+    el('kTmb').textContent = tmb == null ? '—' : fmtKcal(kcal(tmb));
     const get = tmb != null && fator ? kcal(tmb * fator) : null;
-    el('cGet').textContent = get == null ? '—' : fmtKcal(get);
-    el('cGetSub').textContent = get == null ? 'TMB × fator de atividade'
+    el('kGet').textContent = get == null ? '—' : fmtKcal(get);
+    el('kGetSub').textContent = get == null ? 'TMB × fator de atividade'
       : `${fmtKcal(kcal(tmb))} × ${fator}`;
 
-    const box = $('#cAjuste');
+    const box = $('#kAjuste');
     if (get == null) { box.classList.add('hide'); return; }
     box.classList.remove('hide');
     const linhas = [
@@ -1789,19 +1863,35 @@ async function abrirCalculadora(pacienteId) {
       </div>`).join('');
   }
 
-  ligarPeso('cKg', 'cLb', calcular);
-  ligarAltura('cCm', 'cPes', 'cPol', calcular);
-  el('cIdade').oninput = calcular;
-  el('cNivel').onchange = calcular;
-  el('cSexo').onchange = () => { montaNiveis(); calcular(); };
+  ligarPeso('kKg', 'kLb', calcular);
+  ligarAltura('kCm', 'kPes', 'kPol', calcular);
+  el('kIdade').oninput = calcular;
+  el('kNivel').onchange = calcular;
+  el('kSexo').onchange = () => { montaNiveis(); calcular(); };
 
   montaNiveis();
   calcular();
+  // vindo da ficha, começa no nível que já estava escolhido lá
+  if (de.fator && [...el('kNivel').options].some((o) => o.value === String(de.fator))) {
+    el('kNivel').value = String(de.fator); calcular();
+  }
 
-  if (p) $('#cSalvar').onclick = async () => {
+  // devolve peso e nível para a ficha e volta para ela
+  if (de.empilhar) $('#kUsar').onclick = () => {
+    const peso = el('kKg').value, nivel = el('kNivel').value;
+    if (!fecharModal()) return;
+    const kg = $('#cKg'), fator = $('#cFator');
+    if (kg && peso) { kg.value = peso; kg.dispatchEvent(new Event('input')); }
+    if (fator && [...fator.options].some((o) => o.value === nivel)) {
+      fator.value = nivel; fator.dispatchEvent(new Event('change'));
+    }
+    toast('Peso e nível levados para a ficha');
+  };
+
+  if (p) $('#kSalvar').onclick = async () => {
     try {
       await api('/pacientes/' + p.id, { method: 'PUT', body: {
-        ...p, sexo: el('cSexo').value, altura_cm: el('cCm').value || null } });
+        ...p, sexo: el('kSexo').value, altura_cm: el('kCm').value || null } });
       toast('Sexo e altura salvos na ficha');
       CACHE.pacientes = null;
     } catch (e) { toast(e.message); }
@@ -2773,6 +2863,60 @@ if (TOKEN) {
 } else bootLogin();
 
 /* ==========================================================
+   DIAGNÓSTICO DO BANCO
+   Sem terminal, a única forma de ele saber que falta rodar uma
+   migração é o próprio sistema dizer, em cima da tela.
+   ========================================================== */
+async function conferirBanco() {
+  let d;
+  try { d = await api('/diagnostico'); } catch { return; }
+  const faixa = $('#avisoBanco');
+  if (!faixa) return;
+  if (d.ok) { faixa.classList.add('hide'); return; }
+  const quais = d.pendentes.map((x) => x.migracao).join(', ');
+  faixa.classList.remove('hide');
+  faixa.innerHTML = `
+    <div>
+      <b>Falta atualizar o banco.</b>
+      Rode ${d.pendentes.length === 1 ? 'a migração' : 'as migrações'}
+      <b>${esc(quais)}</b> no console do D1, nessa ordem.
+      Até lá, ${d.pendentes.map((x) => x.o_que).join(' · ')} ${
+        d.pendentes.length === 1 ? 'não funciona' : 'não funcionam'}.
+    </div>
+    <button class="btn mini ghost" onclick="detalheBanco()">O que falta</button>
+    <button class="btn mini ghost" onclick="this.parentElement.classList.add('hide')">Fechar</button>`;
+  CACHE.diagnostico = d;
+}
+
+function detalheBanco() {
+  const d = CACHE.diagnostico;
+  if (!d) return;
+  modal('O que falta no banco', `
+    <p style="font-size:13.5px;color:var(--txt-2);margin:0 0 14px">
+      Abra o banco <code>crm-luca</code> no Cloudflare → D1 → Console,
+      cole o conteúdo de cada arquivo e execute, nesta ordem.</p>
+    ${d.pendentes.map((x) => `
+      <div class="card" style="margin-bottom:10px;padding:13px 15px">
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
+          <span class="cod">${esc(x.migracao)}</span>
+          <b style="font-size:13.5px">${esc(x.o_que)}</b>
+        </div>
+        <small style="color:var(--txt-2)">
+          ${x.tabelas.length ? 'Tabelas que faltam: <b>' + x.tabelas.map(esc).join(', ') + '</b>. ' : ''}
+          ${x.colunas.length ? 'Campos que faltam: <b>' + x.colunas.map(esc).join(', ') + '</b>.' : ''}
+        </small>
+      </div>`).join('')}
+    ${d.r2 ? '' : `<div class="card" style="padding:13px 15px;background:#FBF0D6;border-color:#E6D6A8">
+      <b style="font-size:13.5px">Armazenamento de arquivos não conectado</b>
+      <small style="display:block;color:#8A6D12;margin-top:4px">
+        Em Settings → Functions → R2 bucket bindings, crie o binding
+        <b>ARQUIVOS</b> apontando para o bucket. Sem ele a aba
+        "Planos e anexos" não recebe arquivo.</small></div>`}`, `
+    <button class="btn ghost" onclick="fecharModal()">Fechar</button>
+    <button class="btn ouro" onclick="fecharModal();conferirBanco();toast('Conferido')">Conferir de novo</button>`);
+}
+
+/* ==========================================================
    CIDADE → FUSO · INSTAGRAM · POST-IT
    ========================================================== */
 
@@ -3219,9 +3363,10 @@ function formMedicao(pacienteId, id) {
     </div>
     <p style="font-size:12.5px;color:var(--txt-2);margin:12px 0 0">
       Campo em branco fica em branco no gráfico — não vira zero.</p>`, `
-    <button class="btn ghost" onclick="abrirPaciente(${pacienteId})">Cancelar</button>
+    <button class="btn ghost" onclick="if(fecharModal())abrirPaciente(${pacienteId})">Cancelar</button>
     <button class="btn ouro" id="ibSalvar">Salvar</button>`);
 
+  const liberar = travarSeMexer(AVISO_SAIR('a medição'));
   $('#ibSalvar').onclick = async () => {
     const body = { paciente_id: pacienteId, data: $('#ibData').value, hora: $('#ibHora').value,
       peso: $('#ibPeso').value, massa_muscular: $('#ibMM').value, gordura_kg: $('#ibGK').value,
@@ -3230,7 +3375,7 @@ function formMedicao(pacienteId, id) {
     try {
       if (id) await api('/inbody/' + id, { method: 'PUT', body });
       else await api('/inbody', { method: 'POST', body });
-      toast('Medição salva'); abrirPaciente(pacienteId, 'inbody');
+      liberar(); toast('Medição salva'); abrirPaciente(pacienteId, 'inbody');
     } catch (e) { toast(e.message); }
   };
 }
@@ -3253,7 +3398,7 @@ function configInbody(pacienteId) {
     <p style="font-size:12.5px;color:var(--txt-2);margin:12px 0 0">
       Em branco, o plano vem do contrato ativo e o modelo vem de Configurações.</p>`, `
     <button class="btn perigo" id="ibDesligar">Desligar o InBody</button>
-    <button class="btn ghost" onclick="abrirPaciente(${pacienteId})">Cancelar</button>
+    <button class="btn ghost" onclick="if(fecharModal())abrirPaciente(${pacienteId})">Cancelar</button>
     <button class="btn ouro" id="ibSalvarCab">Salvar</button>`);
   $('#ibSalvarCab').onclick = async () => {
     await api('/inbody/config', { method: 'PUT', body: { paciente_id: pacienteId,

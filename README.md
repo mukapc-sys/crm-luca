@@ -126,6 +126,17 @@ grava o fuso certo. É o que resolve o paciente da Califórnia receber
 mensagem às 6 da manhã: San Diego vira `America/Los_Angeles`, não
 `America/New_York`. Cidade que não está na tabela cai no fuso do país.
 
+## Nada se perde por clique errado
+
+Toda tela de digitação — ficha de consulta, cadastro de paciente, medição do
+InBody — pergunta antes de fechar se houver coisa não salva, seja no X, no
+Esc, no clique fora ou no Cancelar. Salvar fecha direto, sem pergunta.
+
+A **calculadora abre por cima da ficha**, não no lugar dela: volta e está
+tudo como estava. Ela já abre com o peso que ele acabou de digitar e com a
+idade da data daquela consulta, e o botão **Usar na ficha** devolve o peso e
+o nível de atividade para a ficha.
+
 ## TMB e aniversário
 
 A ficha de consulta calcula a TMB assim que o peso é digitado, usando a
@@ -178,6 +189,13 @@ No console do D1, na ordem:
 6. `migrate-06.sql` — objetivos, perguntas do formulário em 3 idiomas,
    cidade e fuso do paciente, refeições e TMB na ficha, InBody e o
    endereço do formulário. É o maior: 656 cidades viram fuso horário
+
+Se estiver em dúvida sobre quais já rodaram, o próprio sistema diz: ao
+entrar no painel aparece uma faixa amarela no topo nomeando as migrações
+que faltam, e o botão **O que falta** mostra tabela por tabela e campo por
+campo — além de avisar se o R2 ainda não está ligado. Enquanto falta
+migração, o CRM continua abrindo: o que depende dela fica de fora, em vez
+de derrubar a tela.
 
 Instalação nova não precisa de nenhum: o `schema.sql` já vem completo.
 

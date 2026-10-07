@@ -178,6 +178,12 @@ tbody tr:hover{background:#FAFCFE}
 .inbody-cab > div > div{font-size:14px;font-weight:600}
 @media(max-width:700px){.inbody-cab{grid-template-columns:repeat(2,1fr)}.kpi-tmb{grid-template-columns:1fr}}
 
+.aviso-banco{display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+  background:#FBF0D6;border:1px solid #E6D6A8;color:#7A5F0D;border-radius:10px;
+  padding:12px 15px;margin-bottom:16px;font-size:13.5px;line-height:1.5}
+.aviso-banco > div{flex:1;min-width:240px}
+.aviso-banco .btn{flex:none}
+
 /* ---------- post-it flutuante ---------- */
 #postit{position:fixed;right:20px;bottom:20px;width:300px;z-index:80;background:#FFF8D6;
   border:1px solid #E8D98A;border-radius:12px;box-shadow:0 14px 36px rgba(16,36,56,.22);
@@ -353,7 +359,10 @@ body.apresentando{overflow:hidden}
     </nav>
     <button class="btn ghost mini" id="btnSair" style="margin-top:14px;width:100%">Sair</button>
   </aside>
-  <main id="tela"></main>
+  <main>
+    <div id="avisoBanco" class="aviso-banco hide"></div>
+    <div id="tela"></div>
+  </main>
 </div>
 
 <div id="postit" class="hide">
