@@ -64,14 +64,35 @@ que o armazenamento não está conectado.
 Abra a URL do Pages. A tela pede para criar o usuário administrador —
 e-mail e senha do Luca. A partir daí é login normal.
 
+## Importar os dados atuais (planilha oficial)
+
+A base vem da aba **Clientes** da planilha oficial — não da aba CRM, que tem
+linhas com `#REF!`, nem da aba Faturamento, que zera os últimos meses.
+
+Regras que a importação aplica, as mesmas que a planilha documenta na aba Config:
+
+- **Identidade é o nome.** O código se repete entre pessoas diferentes, então
+  nome igual = renovação: vira um segundo contrato na mesma ficha.
+- **A forma de pagamento define a moeda.** Zelle e PayPal em dólar, Pix, Asaas
+  e Infinity em real, "Libras- Paypal" em libra, "Euros - paypal" em euro.
+- **"Valor recebido R$" está em reais mesmo nos contratos em dólar.** A razão
+  entre recebido e cobrado é a taxa que o Luca usou (5,0 · 5,2 · 5,5), e é essa
+  taxa que entra no CRM — por isso o total em reais bate com o da planilha.
+  Algumas linhas estão anotadas como Pix mas a razão de 5,5 mostra que foram
+  cobradas em dólar; a importação corrige a moeda nessas.
+- **Plano que só existe na planilha é criado no cadastro**, sem preço, para o
+  contrato não ficar órfão na tela de Planos.
+- **Contrato encerrado não vira cobrança.** O que sobrou é histórico (desconto,
+  acerto por fora), não dívida a perseguir. Parceria e cortesia não geram parcela.
+
 ## Importar os dados atuais
 
 Tela **Configurações → Importar dados**. O arquivo é enviado em blocos
 automaticamente, não precisa dividir nada.
 
 1. Tipo **Pacientes e contratos** → arquivo `crm-luca-pacientes.json`
-   (338 linhas da aba CRM: cadastro, plano, datas, valores, parcelas e
-   os pagamentos já recebidos)
+   (417 linhas da aba Clientes: cadastro, plano, datas, valores, parcelas,
+   a taxa de câmbio de cada contrato e os pagamentos já recebidos)
 2. Tipo **Anamneses** → arquivo `seed/crm-luca-anamneses.json`
    (333 respostas do formulário BR, casadas com os pacientes pelo nome)
 

@@ -53,9 +53,26 @@ function diffDias(a, b) {
   const d1 = new Date(a + 'T12:00:00Z'), d2 = new Date(b + 'T12:00:00Z');
   return Math.round((d1 - d2) / 86400000);
 }
+/* Número que chega de três jeitos: já numérico (JSON), em pt-BR ("1.234,56")
+   ou em en-US ("1,234.56"). Número nunca é reinterpretado — era o que
+   transformava a cotação 5.199 em 5199. */
 const num = (v) => {
   if (v === null || v === undefined || v === '') return 0;
-  const n = Number(String(v).replace(/[^\d.,-]/g, '').replace(/\.(?=\d{3}\b)/g, '').replace(',', '.'));
+  if (typeof v === 'number') return isFinite(v) ? v : 0;
+  let s = String(v).trim().replace(/[^\d.,-]/g, '');
+  if (!s || s === '-') return 0;
+  const virgula = s.includes(','), ponto = s.includes('.');
+  if (virgula && ponto) {
+    // vale o separador que aparece por último
+    s = s.lastIndexOf(',') > s.lastIndexOf('.')
+      ? s.replace(/\./g, '').replace(',', '.')
+      : s.replace(/,/g, '');
+  } else if (virgula) {
+    s = /^-?\d{1,3}(,\d{3})+$/.test(s) ? s.replace(/,/g, '') : s.replace(',', '.');
+  } else if (ponto && /^-?\d{1,3}(\.\d{3})+$/.test(s)) {
+    s = s.replace(/\./g, '');   // "1.234.567" é milhar, não decimal
+  }
+  const n = Number(s);
   return isNaN(n) ? 0 : n;
 };
 // medição em branco é "não medi", não zero: zero afundaria o gráfico
@@ -136,6 +153,8 @@ async function gerarParcelas(env, contrato) {
     .bind(contrato.id).run();
   const qtd = Math.max(1, Number(contrato.qtd_parcelas || 1));
   const valorParcela = Math.round((Number(contrato.valor_cobrado || 0) / qtd) * 100) / 100;
+  // parceria e cortesia não têm o que cobrar: sem parcela, sem aviso na home
+  if (!(valorParcela > 0)) return;
   const base = contrato.data_inicial || hoje();
   for (let i = 1; i <= qtd; i++) {
     const venc = addDias(base, 30 * (i - 1));
@@ -1936,6 +1955,7 @@ export async function onRequest(context) {
     if (rota === '/importar/pacientes' && metodo === 'POST') {
       const linhas = Array.isArray(body.linhas) ? body.linhas : [];
       let criados = 0, renovacoes = 0, contratos = 0;
+      const planosNovos = [];
       for (const l of linhas) {
         if (!l.nome) continue;
         // Identidade é o NOME. O código da planilha se repete entre pessoas
@@ -1963,6 +1983,19 @@ export async function onRequest(context) {
 
         if (l.data_inicial && l.valor_cobrado != null) {
           const moeda = l.moeda || MOEDA_POR_FORMA[(l.forma || '').toLowerCase()] || 'BRL';
+          // plano que só existe na planilha entra no cadastro sem preço,
+          // para o contrato não ficar órfão na tela de Planos
+          if (l.plano) {
+            const tem = await env.DB.prepare('SELECT id FROM planos WHERE codigo=?').bind(l.plano).first();
+            if (!tem) {
+              const m = await env.DB.prepare('SELECT MAX(posicao) p FROM planos').first();
+              await env.DB.prepare(
+                `INSERT INTO planos (codigo,nome,tipo,dias,consultas,follow_up_dias,posicao,ativo)
+                 VALUES (?,?,?,?,?,?,?,1)`
+              ).bind(l.plano, l.plano, 'outro', 30, 0, 7, (Number(m && m.p) || 0) + 1).run();
+              planosNovos.push(l.plano);
+            }
+          }
           const cr = await env.DB.prepare(
             `INSERT INTO contratos (paciente_id,codigo_plano,data_inicial,data_final,valor_cobrado,
                 moeda,forma,qtd_parcelas,status,obs)
@@ -1973,21 +2006,37 @@ export async function onRequest(context) {
           const c = await env.DB.prepare('SELECT * FROM contratos WHERE id=?').bind(cr.meta.last_row_id).first();
           await gerarParcelas(env, c);
 
-          if (num(l.valor_recebido) > 0) {
-            // A coluna "Valor recebido" da planilha está SEMPRE em reais, inclusive
-            // nos contratos em dólar. Converte para a moeda do contrato pela taxa
-            // da data de início antes de dar baixa nas parcelas.
-            const taxa = await cotacaoDoDia(env, c.moeda, l.data_inicial);
-            const recebidoBrl = num(l.valor_recebido);
-            let resta = (c.moeda === 'BRL' || !taxa)
-              ? recebidoBrl
-              : Math.round((recebidoBrl / taxa) * 100) / 100;
+          if (num(l.valor_recebido) > 0 || num(l.valor_recebido_moeda) > 0) {
+            // A coluna "Valor recebido" da planilha está em reais, inclusive nos
+            // contratos em dólar. Quando a planilha traz a taxa que o Luca usou
+            // (valor_recebido_moeda + cotacao), vale a dela: o total em reais do
+            // CRM fica igual ao da planilha. Sem isso, usa o câmbio do dia.
+            let taxa, resta;
+            // "exato" = o valor já veio na moeda do contrato (com a taxa que o
+            // Luca usou) ou o contrato é em real. Só nesse caso o que sobrar
+            // depois de quitar as parcelas é dinheiro de verdade que entrou.
+            // Quando a conversão foi estimada pelo câmbio do dia, a sobra é
+            // ruído da taxa e não pode virar faturamento.
+            const exato = num(l.valor_recebido_moeda) > 0 || c.moeda === 'BRL';
+            if (num(l.valor_recebido_moeda) > 0) {
+              resta = num(l.valor_recebido_moeda);
+              taxa = num(l.cotacao) > 0 ? num(l.cotacao)
+                : (c.moeda === 'BRL' ? 1 : await cotacaoDoDia(env, c.moeda, l.data_inicial) || 1);
+            } else {
+              taxa = await cotacaoDoDia(env, c.moeda, l.data_inicial);
+              const recebidoBrl = num(l.valor_recebido);
+              resta = (c.moeda === 'BRL' || !taxa)
+                ? recebidoBrl
+                : Math.round((recebidoBrl / taxa) * 100) / 100;
+            }
 
-            const ps = await env.DB.prepare(
-              'SELECT * FROM parcelas WHERE contrato_id=? ORDER BY numero ASC').bind(c.id).all();
-            for (const p of (ps.results || [])) {
+            const ps = (await env.DB.prepare(
+              'SELECT * FROM parcelas WHERE contrato_id=? ORDER BY numero ASC').bind(c.id).all()).results || [];
+            for (let i = 0; i < ps.length; i++) {
+              const p = ps[i];
               if (resta <= 0.01) break;
-              const aplica = Math.min(resta, Number(p.valor));
+              const ultima = exato && i === ps.length - 1;
+              const aplica = ultima ? resta : Math.min(resta, Number(p.valor));
               const status = aplica + 0.009 >= Number(p.valor) ? 'paga' : 'parcial';
               await env.DB.prepare('UPDATE parcelas SET pago=?,status=? WHERE id=?')
                 .bind(Math.round(aplica * 100) / 100, status, p.id).run();
@@ -2011,7 +2060,8 @@ export async function onRequest(context) {
           contratos++;
         }
       }
-      return json({ ok: true, criados, renovacoes, contratos });
+      return json({ ok: true, criados, renovacoes, contratos,
+        planos_criados: [...new Set(planosNovos)] });
     }
 
     // sincroniza o histórico de câmbio de uma vez (deixa a importação rápida)
