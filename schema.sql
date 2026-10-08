@@ -135,9 +135,11 @@ CREATE TABLE IF NOT EXISTS anamneses (
   respondido_em TEXT,
   origem        TEXT DEFAULT 'BR',
   dados         TEXT,
+  extra         TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_ana_pac  ON anamneses(paciente_id);
+CREATE INDEX IF NOT EXISTS idx_ana_orfa ON anamneses(paciente_id,nome);
 CREATE INDEX IF NOT EXISTS idx_ana_nome ON anamneses(nome);
 CREATE TABLE IF NOT EXISTS consultas (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1116,3 +1118,15 @@ INSERT OR IGNORE INTO settings (key,value) VALUES
  ('inbody_texto_visceral','Gordura entre os órgãos. Em excesso, aumenta o risco de doenças; valores acima de 10 são preocupantes.');
 INSERT OR IGNORE INTO settings (key,value) VALUES
  ('form_dominio','https://form.lucaternes.com.br');
+CREATE TABLE IF NOT EXISTS tarefas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  texto TEXT NOT NULL,
+  data TEXT,
+  hora TEXT,
+  feita INTEGER NOT NULL DEFAULT 0,
+  feita_em TEXT,
+  posicao INTEGER DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tarefa_aberta ON tarefas(feita, data, hora);
+CREATE INDEX IF NOT EXISTS idx_tarefa_feita ON tarefas(feita, feita_em);

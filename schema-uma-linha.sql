@@ -17,8 +17,9 @@ CREATE TABLE IF NOT EXISTS pagamentos ( id INTEGER PRIMARY KEY AUTOINCREMENT, pa
 CREATE INDEX IF NOT EXISTS idx_pag_data ON pagamentos(data);
 CREATE INDEX IF NOT EXISTS idx_pag_pac ON pagamentos(paciente_id);
 CREATE TABLE IF NOT EXISTS cotacoes ( dia TEXT NOT NULL, moeda TEXT NOT NULL, taxa REAL NOT NULL, fonte TEXT DEFAULT 'awesomeapi', PRIMARY KEY (dia, moeda) );
-CREATE TABLE IF NOT EXISTS anamneses ( id INTEGER PRIMARY KEY AUTOINCREMENT, paciente_id INTEGER, cod TEXT, nome TEXT, email TEXT, telefone TEXT, respondido_em TEXT, origem TEXT DEFAULT 'BR', dados TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS anamneses ( id INTEGER PRIMARY KEY AUTOINCREMENT, paciente_id INTEGER, cod TEXT, nome TEXT, email TEXT, telefone TEXT, respondido_em TEXT, origem TEXT DEFAULT 'BR', dados TEXT, extra TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')) );
 CREATE INDEX IF NOT EXISTS idx_ana_pac ON anamneses(paciente_id);
+CREATE INDEX IF NOT EXISTS idx_ana_orfa ON anamneses(paciente_id,nome);
 CREATE INDEX IF NOT EXISTS idx_ana_nome ON anamneses(nome);
 CREATE TABLE IF NOT EXISTS consultas ( id INTEGER PRIMARY KEY AUTOINCREMENT, paciente_id INTEGER NOT NULL, data TEXT NOT NULL, peso_kg REAL, peso_lbs REAL, treino TEXT, cafe TEXT, lanche_manha TEXT, almoco TEXT, lanche_tarde TEXT, jantar TEXT, ceia TEXT, observacoes TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), refeicoes TEXT, objetivo TEXT, tmb REAL, get_kcal REAL, fator_atividade REAL );
 CREATE INDEX IF NOT EXISTS idx_cons_pac ON consultas(paciente_id, data);
@@ -72,3 +73,6 @@ CREATE INDEX IF NOT EXISTS idx_inbody_pac ON inbody(paciente_id, data);
 INSERT OR IGNORE INTO settings (key,value) VALUES ('inbody_ativo_padrao','0'), ('inbody_modelo','H30'), ('inbody_rodape','@lucaternes.nutri | (53) 99908-7613 | lucaternes.nutri@gmail.com | Rua Barão de Cotegipe, 433 - Sala 1203 - Edifício Porto de Gale - Rio Grande/RS'), ('inbody_texto_peso','É o total do corpo, formado por água, proteínas, minerais e gordura.'), ('inbody_texto_musculo','Quantidade de músculo do corpo — quanto maior, mais força e melhor aparência física.'), ('inbody_texto_gordura','É a quantidade total de gordura no corpo (sob a pele, entre órgãos ou entre músculos).'), ('inbody_texto_percentual','Proporção de gordura em relação ao peso total. Ideal: homens 10% a 20%, mulheres 18% a 28%.'), ('inbody_texto_visceral','Gordura entre os órgãos. Em excesso, aumenta o risco de doenças;
 valores acima de 10 são preocupantes.');
 INSERT OR IGNORE INTO settings (key,value) VALUES ('form_dominio','https://form.lucaternes.com.br');
+CREATE TABLE IF NOT EXISTS tarefas ( id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT NOT NULL, data TEXT, hora TEXT, feita INTEGER NOT NULL DEFAULT 0, feita_em TEXT, posicao INTEGER DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')) );
+CREATE INDEX IF NOT EXISTS idx_tarefa_aberta ON tarefas(feita, data, hora);
+CREATE INDEX IF NOT EXISTS idx_tarefa_feita ON tarefas(feita, feita_em);

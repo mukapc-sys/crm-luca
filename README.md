@@ -11,7 +11,7 @@ Suba estes arquivos mantendo a estrutura:
 ```
 schema.sql
 schema-uma-linha.sql
-migrate-01.sql … migrate-06.sql
+migrate-01.sql … migrate-07.sql
 functions/_middleware.js
 functions/api/[[path]].js
 public/index.html
@@ -29,7 +29,7 @@ Abra a aba **Console** do banco, cole todo o conteúdo de `schema.sql` e execute
 O arquivo não tem comentários — o console do D1 rejeita `--`.
 
 Se o console reclamar de vários comandos de uma vez, use
-`schema-uma-linha.sql`: são 74 linhas, cada uma um comando completo.
+`schema-uma-linha.sql`: são 78 linhas, cada uma um comando completo.
 Cole na ordem, de cima para baixo. Rodar de novo não quebra nada.
 
 **3. Criar o projeto no Pages**
@@ -94,7 +94,31 @@ automaticamente, não precisa dividir nada.
    (417 linhas da aba Clientes: cadastro, plano, datas, valores, parcelas,
    a taxa de câmbio de cada contrato e os pagamentos já recebidos)
 2. Tipo **Anamneses** → arquivo `seed/crm-luca-anamneses.json`
-   (333 respostas do formulário BR, casadas com os pacientes pelo nome)
+   (340 respostas do formulário BR)
+
+   A anamnese não entra só como anexo: ela **completa a ficha**. Altura,
+   nascimento, CPF, Instagram, e-mail, telefone, profissão, endereço e
+   objetivo preenchem o que estiver em branco no cadastro — o que o Luca
+   digitou à mão continua valendo. O peso informado vira a primeira ficha
+   de consulta de quem ainda não tem nenhuma.
+
+   **Como a resposta acha o paciente.** O COD do Luca é o número da linha
+   na planilha de respostas, mas a numeração não é uniforme: no começo o
+   COD é a linha menos um, e a partir de certo ponto passa a ser a linha.
+   Existem ainda dois formulários, BR e US, cada um com sua contagem — o
+   COD 100 de um não é o COD 100 do outro. Por isso cada resposta só é
+   ligada quando há prova: o primeiro nome bate com o do cliente, ou o
+   contrato começa até 7 dias depois do formulário. Duas respostas de
+   pessoas diferentes disputando o mesmo paciente derrubam a mais fraca.
+   Sem prova, a resposta entra no sistema sem dono — é melhor do que
+   pendurar a ficha de saúde de alguém na pessoa errada.
+
+   **Fichas sem dono.** Elas não somem: a tela de Pacientes mostra um aviso
+   com a contagem, e o botão *Ver e ligar* abre a lista com nome, e-mail,
+   telefone e data de cada resposta. Em cada linha ele escolhe o paciente e
+   clica em Ligar — a ficha gruda, o cadastro é completado e a primeira
+   consulta é criada com o peso do formulário, igual à importação. O × ao
+   lado descarta a resposta que não é de ninguém (lead que não fechou).
 
 Importe os pacientes **antes** das anamneses — é o que permite casar as
 duas bases.
@@ -190,12 +214,28 @@ Os textos explicativos, o rodapé de contato e o modelo do aparelho ficam
 em **Configurações → Textos do InBody**. O plano e o modelo podem ser
 trocados por paciente no botão **Cabeçalho**.
 
-## Bloco de notas
+## Tarefas
 
-Post-it flutuante no canto, presente em todas as telas. O conteúdo é
-salvo no servidor, então sobrevive a recarregar a página e a trocar de
-computador. Minimiza no cabeçalho e só esvazia quando ele clica em
-**Concluir**.
+Caixa flutuante no canto, presente em todas as telas. Cada linha é uma
+tarefa com dia e hora opcionais; o check risca e tira da lista, e o que
+foi concluído fica guardado no bloco "Concluídas" até ele mandar apagar.
+O cabeçalho avisa quantas estão abertas e quantas são para hoje, e o que
+venceu aparece em vermelho.
+
+Arrasta-se pelo cabeçalho, sem sair da janela, e a posição fica lembrada
+no navegador. Minimiza com um clique no cabeçalho. Tudo é salvo no
+servidor: sobrevive a recarregar e a trocar de computador. Quem já usava
+o bloco de notas antigo não perde nada — cada linha vira uma tarefa na
+primeira vez que a tela abre.
+
+## Filtro por mês de entrada
+
+Na tela de Pacientes, o filtro **Entrada** lista os meses em que entraram
+pacientes, com a contagem de cada um, e tem a opção **Recentes (últimos
+60 dias)**. Entrada é o início do primeiro contrato; quem nunca fechou
+conta pela data de cadastro. Esse filtro atravessa os segmentos — "quem
+entrou em agosto" é uma pergunta sobre a base inteira — e a coluna de
+destaque passa a mostrar a data de entrada.
 
 ## Atualizar um banco que já existe
 
@@ -210,6 +250,7 @@ No console do D1, na ordem:
 6. `migrate-06.sql` — objetivos, perguntas do formulário em 3 idiomas,
    cidade e fuso do paciente, refeições e TMB na ficha, InBody e o
    endereço do formulário. É o maior: 656 cidades viram fuso horário
+7. `migrate-07.sql` — lista de tarefas (substitui o bloco de notas)
 
 Se estiver em dúvida sobre quais já rodaram, o próprio sistema diz: ao
 entrar no painel aparece uma faixa amarela no topo nomeando as migrações

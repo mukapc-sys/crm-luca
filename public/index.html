@@ -184,30 +184,86 @@ tbody tr:hover{background:#FAFCFE}
 .aviso-banco > div{flex:1;min-width:240px}
 .aviso-banco .btn{flex:none}
 
-/* ---------- post-it flutuante ---------- */
-#postit{position:fixed;right:20px;bottom:20px;width:300px;z-index:80;background:#FFF8D6;
+/* ---------- fichas de formulário sem dono ---------- */
+.aviso-leve{display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+  background:#EEF4FB;border:1px solid #D2E0F0;color:#2A4A6B;border-radius:10px;
+  padding:11px 14px;margin-bottom:14px;font-size:13px;line-height:1.5}
+.aviso-leve > span{flex:1;min-width:240px}
+.dica{color:#5A6B7C;font-size:13px;line-height:1.5;margin:0 0 12px}
+.sd-lista{max-height:min(56vh,440px);overflow:auto;border:1px solid var(--linha);
+  border-radius:10px}
+.sd-item{display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+  padding:10px 12px;border-bottom:1px solid var(--linha)}
+.sd-item:last-child{border-bottom:none}
+.sd-item > div:first-child{flex:1;min-width:200px}
+.sd-item small{display:block;color:#6B7A89;font-size:12px;margin-top:2px}
+.sd-acao{display:flex;gap:6px;align-items:center}
+.sd-acao select{max-width:210px}
+
+/* ---------- tarefas flutuantes ---------- */
+#tarefas{position:fixed;right:20px;bottom:20px;width:330px;z-index:80;background:#FFF8D6;
   border:1px solid #E8D98A;border-radius:12px;box-shadow:0 14px 36px rgba(16,36,56,.22);
-  display:flex;flex-direction:column;overflow:hidden;transition:width .18s,height .18s}
-#postit .pi-cab{display:flex;align-items:center;gap:8px;padding:9px 12px;background:#F7EDB8;
-  border-bottom:1px solid #E8D98A;cursor:pointer;user-select:none}
-#postit .pi-cab b{font-size:13px;color:#6B5A10;flex:1}
-#postit .pi-cab small{font-size:11.5px;color:#8A7620}
-#postit .pi-cab button{background:none;border:0;font-size:15px;line-height:1;color:#6B5A10;padding:2px 5px;
-  border-radius:5px}
-#postit .pi-cab button:hover{background:rgba(0,0,0,.07)}
-#postit textarea{border:0;background:none;border-radius:0;resize:vertical;min-height:150px;
-  font-size:14px;line-height:1.55;color:#3D3306;padding:11px 12px}
-#postit textarea:focus{outline:0}
-#postit .pi-pe{display:flex;align-items:center;gap:8px;padding:8px 10px;border-top:1px solid #E8D98A}
-#postit .pi-pe small{flex:1;font-size:11.5px;color:#8A7620}
-#postit .pi-pe .btn{background:#6B5A10;color:#fff;padding:6px 13px;font-size:12.5px}
-#postit.min{width:auto}
-#postit.min textarea,#postit.min .pi-pe{display:none}
-#postit.min .pi-cab{border-bottom:0}
-#postit.cheio.min .pi-cab{background:var(--ouro)}
-body.apresentando #postit{display:none}
-@media(max-width:860px){#postit{right:10px;bottom:10px;width:min(300px,calc(100vw - 20px))}}
-@media print{#postit{display:none}}
+  display:flex;flex-direction:column;overflow:hidden;max-height:min(560px,calc(100vh - 40px))}
+#tarefas.arrastando{box-shadow:0 22px 50px rgba(16,36,56,.34);cursor:grabbing;user-select:none}
+#tarefas .tf-cab{display:flex;align-items:center;gap:8px;padding:9px 12px;background:#F7EDB8;
+  border-bottom:1px solid #E8D98A;cursor:grab;user-select:none;flex:none}
+#tarefas.arrastando .tf-cab{cursor:grabbing}
+#tarefas .tf-cab b{font-size:13px;color:#6B5A10;flex:none}
+#tarefas .tf-cab small{font-size:11.5px;color:#8A7620;flex:1;text-align:right}
+#tarefas .tf-cab small .urgente{color:#9A3412}
+#tarefas .tf-cab button{background:none;border:0;font-size:15px;line-height:1;color:#6B5A10;
+  padding:2px 5px;border-radius:5px;flex:none}
+#tarefas .tf-cab button:hover{background:rgba(0,0,0,.07)}
+#tarefas .tf-nova{display:flex;gap:6px;padding:10px 10px 8px;border-bottom:1px solid #EFE2A8;flex:none}
+#tarefas .tf-nova input[type=text]{flex:1;min-width:0;border:1px solid #E8D98A;background:#fff;
+  border-radius:8px;padding:8px 10px;font-size:13.5px}
+#tarefas .tf-nova button{flex:none;border:1px solid #E8D98A;background:#fff;color:#6B5A10;
+  border-radius:8px;padding:6px 10px;font-size:13.5px;line-height:1}
+#tarefas .tf-nova button:hover{background:#FFFDF2}
+#tarefas .tf-nova button.on{background:#6B5A10;color:#fff;border-color:#6B5A10}
+#tfQuandoCampos{display:flex;gap:6px;padding:0 10px 9px;border-bottom:1px solid #EFE2A8;flex:none}
+#tfQuandoCampos input{flex:1;min-width:0;border:1px solid #E8D98A;background:#fff;border-radius:8px;
+  padding:6px 8px;font-size:12.5px}
+#tarefas .tf-corpo{overflow:auto;flex:1}
+#tarefas ul{list-style:none;margin:0;padding:4px 0}
+.tf-item{display:flex;align-items:flex-start;gap:9px;padding:7px 11px;transition:opacity .2s}
+.tf-item + .tf-item{border-top:1px solid #F2E7B9}
+.tf-check{flex:none;width:19px;height:19px;margin-top:1px;border:1.5px solid #B59C2E;background:#fff;
+  border-radius:50%;color:#fff;font-size:11px;line-height:1;padding:0;display:grid;place-items:center}
+.tf-check:hover{border-color:#6B5A10;background:#FFFDF2}
+.tf-item.feita .tf-check{background:#6B5A10;border-color:#6B5A10}
+.tf-txt{flex:1;min-width:0;font-size:13.5px;line-height:1.4;color:#3D3306}
+.tf-txt > span{cursor:text;display:block;word-break:break-word}
+.tf-txt > span:hover{text-decoration:underline;text-decoration-style:dotted}
+.tf-quando{display:inline-block;margin-top:3px;font-size:11.5px;color:#8A7620;
+  background:rgba(255,255,255,.75);border-radius:5px;padding:1px 6px}
+.tf-quando.hoje{color:#8A5A00;background:#FDF0DC;font-weight:650}
+.tf-quando.atrasado{color:#93261A;background:#FCECE9;font-weight:650}
+.tf-x{flex:none;background:none;border:0;color:#B59C2E;font-size:16px;line-height:1;padding:0 3px;
+  opacity:0;transition:opacity .15s}
+.tf-item:hover .tf-x{opacity:1}
+.tf-x:hover{color:var(--erro)}
+.tf-item.feita .tf-txt{color:#8A7620}
+.tf-item.feita .tf-txt > span{text-decoration:line-through}
+.tf-item.riscando .tf-txt > span{text-decoration:line-through;transition:opacity .3s}
+.tf-item.riscando{opacity:.35}
+.tf-vazio{padding:14px 12px;font-size:13px;color:#8A7620;text-align:center}
+.tf-feitas-cab{display:flex;align-items:center;gap:7px;padding:8px 11px;border-top:1px solid #E8D98A;
+  background:rgba(255,255,255,.4);font-size:12.5px;color:#6B5A10;font-weight:650;cursor:pointer;
+  user-select:none}
+.tf-feitas-cab .seta{font-size:10px}
+.tf-feitas-cab .qtd{margin-left:auto;font-weight:400;color:#8A7620}
+#tfLimpar{display:block;width:calc(100% - 20px);margin:6px 10px 10px;border:1px solid #E8D98A;
+  background:#fff;color:#8A7620;border-radius:8px;padding:6px;font-size:12.5px}
+#tfLimpar:hover{color:var(--erro);border-color:var(--erro)}
+#tarefas.min{width:auto;max-height:none}
+#tarefas.min .tf-nova,#tarefas.min #tfQuandoCampos,#tarefas.min .tf-corpo,
+#tarefas.min .tf-feitas-cab,#tarefas.min #tfLimpar{display:none}
+#tarefas.min .tf-cab{border-bottom:0}
+#tarefas.cheio.min .tf-cab{background:var(--ouro)}
+body.apresentando #tarefas{display:none}
+@media(max-width:860px){#tarefas{right:10px;bottom:10px;width:min(330px,calc(100vw - 20px))}}
+@media print{#tarefas{display:none}}
 
 /* ---------- InBody: a tela que ele vira para o paciente ---------- */
 body.apresentando{overflow:hidden}
@@ -365,16 +421,28 @@ body.apresentando{overflow:hidden}
   </main>
 </div>
 
-<div id="postit" class="hide">
-  <div class="pi-cab" id="piCabecalho">
-    <b>Bloco de notas</b>
-    <small id="piContador">vazio</small>
-    <button type="button" id="piMin" title="Minimizar / abrir">▾</button>
+<div id="tarefas" class="hide">
+  <div class="tf-cab" id="tfCabecalho">
+    <b>Tarefas</b>
+    <small id="tfContador"></small>
+    <button type="button" id="tfMin" title="Minimizar / abrir">▾</button>
   </div>
-  <textarea id="piTexto" placeholder="anote aqui o que não pode esquecer — fica em todas as telas"></textarea>
-  <div class="pi-pe">
-    <small id="piEstado"></small>
-    <button type="button" class="btn" id="piOk">Concluir</button>
+  <div class="tf-nova">
+    <input type="text" id="tfNova" placeholder="o que não pode esquecer" autocomplete="off">
+    <button type="button" id="tfQuando" title="Marcar dia e hora">🕐</button>
+    <button type="button" id="tfAdd" title="Adicionar">+</button>
+  </div>
+  <div id="tfQuandoCampos" class="hide">
+    <input type="date" id="tfData"><input type="time" id="tfHora">
+  </div>
+  <div class="tf-corpo">
+    <ul id="tfLista"></ul>
+    <div class="tf-feitas-cab hide" id="tfFeitasCab" onclick="alternarFeitas()">
+      <span class="seta" id="tfFeitasSeta">▸</span> Concluídas
+      <span class="qtd" id="tfFeitasQtd">0</span>
+    </div>
+    <ul id="tfFeitas" class="hide"></ul>
+    <button type="button" id="tfLimpar" class="hide" onclick="limparFeitas()">Apagar as concluídas</button>
   </div>
 </div>
 

@@ -246,6 +246,54 @@ async function baseFormulario(env, url) {
 
 // Uma migração que não rodou não pode derrubar a ficha inteira do paciente.
 // O que é acessório volta vazio e a tela avisa, em vez de dar 500.
+/* O formulário sabe coisas que a planilha não tem (altura, nascimento, CPF,
+   Instagram). Preenche só o que estiver em branco na ficha — o que o Luca
+   digitou à mão vale mais que o que o paciente respondeu. E o peso informado
+   vira a primeira consulta de quem ainda não tem nenhuma. */
+async function aproveitarAnamnese(env, pid, a) {
+  const CAMPOS = ['email', 'telefone', 'instagram', 'nascimento', 'cpf',
+    'profissao', 'endereco', 'objetivo', 'altura_cm', 'indicacao'];
+  const antes = await env.DB.prepare(
+    `SELECT ${CAMPOS.join(',')} FROM pacientes WHERE id=?`).bind(pid).first();
+  if (!antes) return { completou: false, ficha: false };
+  await env.DB.prepare(
+    `UPDATE pacientes SET
+        email=COALESCE(NULLIF(email,''),NULLIF(?,'')),
+        telefone=COALESCE(NULLIF(telefone,''),NULLIF(?,'')),
+        instagram=COALESCE(NULLIF(instagram,''),NULLIF(?,'')),
+        nascimento=COALESCE(NULLIF(nascimento,''),NULLIF(?,'')),
+        cpf=COALESCE(NULLIF(cpf,''),NULLIF(?,'')),
+        profissao=COALESCE(NULLIF(profissao,''),NULLIF(?,'')),
+        endereco=COALESCE(NULLIF(endereco,''),NULLIF(?,'')),
+        objetivo=COALESCE(NULLIF(objetivo,''),NULLIF(?,'')),
+        altura_cm=COALESCE(altura_cm,?),
+        indicacao=COALESCE(NULLIF(indicacao,''),NULLIF(?,'')),
+        updated_at=datetime('now')
+      WHERE id=?`
+  ).bind(a.email || '', a.telefone || '', a.instagram || '', a.nascimento || '',
+    a.cpf || '', a.profissao || '', a.endereco || '', a.objetivo || '',
+    a.altura_cm ? num(a.altura_cm) : null, a.indicacao || '', pid).run();
+  const dep = await env.DB.prepare(
+    `SELECT ${CAMPOS.join(',')} FROM pacientes WHERE id=?`).bind(pid).first();
+  const completou = Object.values(dep).join('|') !== Object.values(antes).join('|');
+
+  let ficha = false;
+  const kg = a.peso_kg ? num(a.peso_kg) : 0;
+  if (kg > 0) {
+    const tem = await env.DB.prepare(
+      'SELECT id FROM consultas WHERE paciente_id=? LIMIT 1').bind(pid).first();
+    if (!tem) {
+      await env.DB.prepare(
+        `INSERT INTO consultas (paciente_id,data,peso_kg,peso_lbs,observacoes)
+         VALUES (?,?,?,?,?)`
+      ).bind(pid, a.respondido_em || hoje(), kg, Math.round(kg * 2.20462 * 10) / 10,
+        'peso informado no formulário de anamnese').run();
+      ficha = true;
+    }
+  }
+  return { completou, ficha };
+}
+
 async function talvez(consulta, padrao) {
   try { return await consulta(); } catch (e) {
     // o SQLite escreve a falta de três jeitos diferentes conforme o comando
@@ -1279,21 +1327,70 @@ export async function onRequest(context) {
       return json({ fuso, achou: !!fuso });
     }
 
-    // ---------- bloco de notas que acompanha o Luca em todas as telas ----------
-    if (rota === '/postit' && metodo === 'GET') {
-      const r = await env.DB.prepare(
-        "SELECT key,value FROM settings WHERE key IN ('postit','postit_atualizado')").all();
-      const o = {}; (r.results || []).forEach((x) => { o[x.key] = x.value; });
-      return json({ texto: o.postit || '', atualizado: o.postit_atualizado || '' });
+    // ---------- tarefas: a listinha que acompanha o Luca em todas as telas ----------
+    if (rota === '/tarefas' && metodo === 'GET') {
+      // quem já usava o bloco de notas não perde o que escreveu:
+      // cada linha vira uma tarefa, uma vez só
+      const tem = await env.DB.prepare('SELECT id FROM tarefas LIMIT 1').first();
+      if (!tem) {
+        const velho = (await env.DB.prepare(
+          "SELECT value FROM settings WHERE key='postit'").first())?.value || '';
+        const linhas = velho.split('\n').map((l) => l.trim()).filter(Boolean);
+        for (let i = 0; i < linhas.length; i++) {
+          await env.DB.prepare('INSERT INTO tarefas (texto,posicao) VALUES (?,?)')
+            .bind(linhas[i].slice(0, 500), i + 1).run();
+        }
+        if (linhas.length) await env.DB.prepare(
+          "UPDATE settings SET value='' WHERE key='postit'").run();
+      }
+      // sem data vai para o fim da lista, não para o começo
+      const abertas = await env.DB.prepare(
+        `SELECT * FROM tarefas WHERE feita=0
+          ORDER BY CASE WHEN data IS NULL OR data='' THEN 1 ELSE 0 END,
+                   data ASC, COALESCE(NULLIF(hora,''),'99:99') ASC, posicao ASC, id ASC`).all();
+      const feitas = await env.DB.prepare(
+        'SELECT * FROM tarefas WHERE feita=1 ORDER BY feita_em DESC, id DESC LIMIT 50').all();
+      const quantasFeitas = await env.DB.prepare(
+        'SELECT COUNT(*) c FROM tarefas WHERE feita=1').first();
+      return json({
+        abertas: abertas.results || [],
+        feitas: feitas.results || [],
+        total_feitas: (quantasFeitas && quantasFeitas.c) || 0,
+      });
     }
-    if (rota === '/postit' && metodo === 'PUT') {
-      const texto = String(body.texto == null ? '' : body.texto).slice(0, 20000);
+    if (rota === '/tarefas' && metodo === 'POST') {
+      const texto = String(body.texto || '').trim().slice(0, 500);
+      if (!texto) return bad('Escreva a tarefa.');
+      const m = await env.DB.prepare('SELECT MAX(posicao) p FROM tarefas').first();
+      const r = await env.DB.prepare(
+        'INSERT INTO tarefas (texto,data,hora,posicao) VALUES (?,?,?,?)')
+        .bind(texto, body.data || null, body.hora || null, (Number(m && m.p) || 0) + 1).run();
+      return json({ ok: true, id: r.meta.last_row_id });
+    }
+    if (rota.startsWith('/tarefas/') && seg[1] !== 'limpar' && metodo === 'PUT') {
+      const t = await env.DB.prepare('SELECT * FROM tarefas WHERE id=?').bind(seg[1]).first();
+      if (!t) return bad('Tarefa não encontrada.', 404);
+      const feita = body.feita === undefined ? t.feita : (body.feita ? 1 : 0);
       const agora = new Date().toISOString().slice(0, 19).replace('T', ' ');
-      await env.DB.batch([
-        env.DB.prepare("INSERT INTO settings (key,value) VALUES ('postit',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(texto),
-        env.DB.prepare("INSERT INTO settings (key,value) VALUES ('postit_atualizado',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(texto ? agora : ''),
-      ]);
-      return json({ ok: true, atualizado: texto ? agora : '' });
+      await env.DB.prepare(
+        'UPDATE tarefas SET texto=?,data=?,hora=?,feita=?,feita_em=? WHERE id=?')
+        .bind(
+          body.texto === undefined ? t.texto : String(body.texto).trim().slice(0, 500) || t.texto,
+          body.data === undefined ? t.data : (body.data || null),
+          body.hora === undefined ? t.hora : (body.hora || null),
+          feita,
+          feita ? (t.feita ? t.feita_em : agora) : null,
+          seg[1]).run();
+      return json({ ok: true });
+    }
+    if (rota.startsWith('/tarefas/') && seg[1] !== 'limpar' && metodo === 'DELETE') {
+      await env.DB.prepare('DELETE FROM tarefas WHERE id=?').bind(seg[1]).run();
+      return json({ ok: true });
+    }
+    if (rota === '/tarefas/limpar' && metodo === 'POST') {
+      const q = await env.DB.prepare('SELECT COUNT(*) c FROM tarefas WHERE feita=1').first();
+      await env.DB.prepare('DELETE FROM tarefas WHERE feita=1').run();
+      return json({ ok: true, apagadas: (q && q.c) || 0 });
     }
 
     // ==========================================================
@@ -1378,6 +1475,7 @@ export async function onRequest(context) {
         SELECT pa.id, pa.cod, pa.nome, pa.apelido, pa.pais, pa.telefone, pa.email,
                pa.objetivo, pa.status, pa.sexo, pa.altura_cm, pa.nascimento, pa.created_at,
                COLUNAS_NOVAS
+               COALESCE(prim.entrada, substr(pa.created_at,1,10)) AS entrada,
                c.codigo_plano  AS plano_atual,
                c.data_final    AS data_final,
                uc.ultima_consulta,
@@ -1386,6 +1484,9 @@ export async function onRequest(context) {
           LEFT JOIN (SELECT paciente_id, MAX(id) AS mid FROM contratos GROUP BY paciente_id) lc
                  ON lc.paciente_id = pa.id
           LEFT JOIN contratos c ON c.id = lc.mid
+          LEFT JOIN (SELECT paciente_id, MIN(data_inicial) AS entrada
+                       FROM contratos GROUP BY paciente_id) prim
+                 ON prim.paciente_id = pa.id
           LEFT JOIN (SELECT paciente_id, MAX(data) AS ultima_consulta
                        FROM consultas GROUP BY paciente_id) uc
                  ON uc.paciente_id = pa.id
@@ -2076,22 +2177,91 @@ export async function onRequest(context) {
 
     if (rota === '/importar/anamneses' && metodo === 'POST') {
       const linhas = Array.isArray(body.linhas) ? body.linhas : [];
-      let gravadas = 0, casadas = 0;
+      let gravadas = 0, casadas = 0, completados = 0, fichas = 0;
       for (const a of linhas) {
         if (!a.nome) continue;
+        // paciente_nome vem do cruzamento já resolvido (o COD do Luca é o
+        // número da linha do formulário, e essa numeração desloca em alguns
+        // trechos). Sem ele, tenta pelo nome de quem respondeu e pelo código.
         let pid = null;
-        const p = await env.DB.prepare(
-          'SELECT id FROM pacientes WHERE nome=? OR (cod IS NOT NULL AND cod=?)')
+        let p = null;
+        if (a.paciente_nome) p = await env.DB.prepare(
+          'SELECT * FROM pacientes WHERE lower(trim(nome))=lower(trim(?)) LIMIT 1')
+          .bind(a.paciente_nome).first();
+        if (!p) p = await env.DB.prepare(
+          `SELECT * FROM pacientes
+            WHERE lower(trim(nome))=lower(trim(?)) OR (cod IS NOT NULL AND cod=?)`)
           .bind(a.nome, a.cod ? String(a.cod) : '___').first();
         if (p) { pid = p.id; casadas++; }
-        await env.DB.prepare(
-          `INSERT INTO anamneses (paciente_id,cod,nome,email,telefone,respondido_em,origem,dados)
-           VALUES (?,?,?,?,?,?,?,?)`
-        ).bind(pid, a.cod ? String(a.cod) : null, a.nome, a.email || null, a.telefone || null,
-          a.respondido_em || null, a.origem || 'BR', JSON.stringify(a.dados || {})).run();
+        /* Guarda também os campos já lidos da resposta (altura, nascimento,
+           CPF…). Sem eles, uma ficha que só ganha dono depois entraria no
+           cadastro vazia: o JSON de `dados` tem as perguntas cruas, não os
+           valores limpos. */
+        const extra = JSON.stringify({
+          instagram: a.instagram || '', nascimento: a.nascimento || '',
+          cpf: a.cpf || '', profissao: a.profissao || '', endereco: a.endereco || '',
+          objetivo: a.objetivo || '', indicacao: a.indicacao || '',
+          altura_cm: a.altura_cm || null, peso_kg: a.peso_kg || null,
+        });
+        const vals = [pid, a.cod ? String(a.cod) : null, a.nome, a.email || null,
+          a.telefone || null, a.respondido_em || null, a.origem || 'BR',
+          JSON.stringify(a.dados || {})];
+        const gravou = await talvez(() => env.DB.prepare(
+          `INSERT INTO anamneses
+             (paciente_id,cod,nome,email,telefone,respondido_em,origem,dados,extra)
+            VALUES (?,?,?,?,?,?,?,?,?)`).bind(...vals, extra).run(), null);
+        if (!gravou) await env.DB.prepare(
+          `INSERT INTO anamneses
+             (paciente_id,cod,nome,email,telefone,respondido_em,origem,dados)
+            VALUES (?,?,?,?,?,?,?,?)`).bind(...vals).run();
         gravadas++;
+
+        if (p) {
+          const r = await aproveitarAnamnese(env, pid, a);
+          if (r.completou) completados++;
+          if (r.ficha) fichas++;
+        }
       }
-      return json({ ok: true, gravadas, casadas });
+      return json({ ok: true, gravadas, casadas, completados, fichas });
+    }
+
+    /* ---------- fichas sem dono ----------
+       Resposta de formulário que não achou paciente nenhum fica guardada sem
+       dono em vez de ser pendurada na pessoa errada. Esta tela é onde o Luca
+       vê essas respostas e diz de quem é cada uma. */
+    if (rota === '/anamneses/sem-dono' && metodo === 'GET') {
+      const r = await talvez(() => env.DB.prepare(
+        `SELECT id, cod, nome, email, telefone, respondido_em, origem,
+                substr(dados,1,1) AS tem_dados
+           FROM anamneses WHERE paciente_id IS NULL
+          ORDER BY nome`).all(), { results: [] });
+      return json({ linhas: r.results || [] });
+    }
+
+    if (rota.startsWith('/anamneses/') && seg[2] === 'ligar' && metodo === 'POST') {
+      const id = Number(seg[1]);
+      const pid = Number(body.paciente_id);
+      const a = await env.DB.prepare('SELECT * FROM anamneses WHERE id=?').bind(id).first();
+      if (!a) return json({ error: 'Ficha não encontrada.' }, 404);
+      if (a.paciente_id) return json({ error: 'Essa ficha já tem dono.' }, 400);
+      const p = await env.DB.prepare('SELECT id,nome FROM pacientes WHERE id=?').bind(pid).first();
+      if (!p) return json({ error: 'Paciente não encontrado.' }, 404);
+      const outra = await env.DB.prepare(
+        'SELECT id FROM anamneses WHERE paciente_id=? LIMIT 1').bind(pid).first();
+      await env.DB.prepare('UPDATE anamneses SET paciente_id=? WHERE id=?').bind(pid, id).run();
+      // os campos ficam no JSON de respostas; o aproveitamento lê de lá
+      let d = {}; try { d = JSON.parse(a.extra || '{}'); } catch { d = {}; }
+      const r = await aproveitarAnamnese(env, pid, {
+        email: a.email, telefone: a.telefone, respondido_em: a.respondido_em, ...d,
+      });
+      return json({ ok: true, paciente: p.nome, completou: r.completou,
+        ficha: r.ficha, ja_tinha: !!outra });
+    }
+
+    if (rota.startsWith('/anamneses/') && seg.length === 2 && metodo === 'DELETE') {
+      await env.DB.prepare('DELETE FROM anamneses WHERE id=? AND paciente_id IS NULL')
+        .bind(Number(seg[1])).run();
+      return json({ ok: true });
     }
 
     // ---------- settings ----------

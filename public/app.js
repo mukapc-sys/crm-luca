@@ -120,7 +120,7 @@ async function entrarApp() {
   $('#login').classList.add('hide'); $('#app').classList.remove('hide');
   PLANOS = (await api('/planos')).planos;
   await carregarObjetivos(true);
-  iniciarPostit();
+  iniciarTarefas();
   conferirBanco();
   irPara('home');
 }
@@ -631,7 +631,43 @@ async function relatorioFunil() {
 /* ==========================================================
    PACIENTES — separados pelo que exige ação, não por uma lista só
    ========================================================== */
-let FILTRO = { q: '', objetivo: '', pais: '', plano: '' };
+let FILTRO = { q: '', objetivo: '', pais: '', plano: '', entrada: '' };
+
+/* Mês de entrada = início do primeiro contrato; quem nunca fechou conta
+   pela data de cadastro. "Recentes" são os últimos 60 dias. */
+const MES_PT = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
+  'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+const mesLegivel = (ym) => {
+  const [a, m] = String(ym).split('-');
+  return `${MES_PT[Number(m) - 1]}/${a}`;
+};
+function mesesDeEntrada(lista) {
+  const c = {};
+  lista.forEach((p) => {
+    const m = String(p.entrada || '').slice(0, 7);
+    if (m.length === 7) c[m] = (c[m] || 0) + 1;
+  });
+  return Object.keys(c).sort().reverse().map((m) => ({ mes: m, qtd: c[m] }));
+}
+function pintarMesesEntrada() {
+  const sel = $('#fEntrada');
+  if (!sel) return;
+  const meses = mesesDeEntrada(CACHE.pacientes || []);
+  sel.innerHTML = `<option value="">Qualquer data</option>
+    <option value="recentes">Recentes (últimos 60 dias)</option>
+    ${meses.map((m) => `<option value="${m.mes}">${mesLegivel(m.mes)} (${m.qtd})</option>`).join('')}`;
+  sel.value = FILTRO.entrada || '';
+}
+
+const diasDesde = (iso) => Math.max(0, Math.round(
+  (new Date(hojeISO() + 'T12:00:00Z') - new Date(String(iso).slice(0, 10) + 'T12:00:00Z')) / 86400000));
+
+function entrouNosUltimos(p, dias) {
+  if (!p.entrada) return false;
+  const limite = new Date(hojeISO() + 'T12:00:00Z');
+  limite.setUTCDate(limite.getUTCDate() - dias);
+  return String(p.entrada).slice(0, 10) >= limite.toISOString().slice(0, 10);
+}
 let SEGMENTO = 'acompanhamento';
 
 // Cada segmento é uma pergunta de negócio, não um status de banco.
@@ -689,15 +725,99 @@ async function telaPacientes() {
         <option value="">Todos</option>
         ${PLANOS.map((p) => `<option value="${esc(p.codigo)}"${FILTRO.plano === p.codigo ? ' selected' : ''}>${esc(p.codigo)}</option>`).join('')}
       </select></div>
-      <button class="btn ghost" onclick="FILTRO={q:'',objetivo:'',pais:'',plano:''};telaPacientes()">Limpar</button>
+      <div><label>Entrada</label><select id="fEntrada">
+        <option value="">Qualquer data</option>
+        <option value="recentes"${FILTRO.entrada === 'recentes' ? ' selected' : ''}>Recentes (últimos 60 dias)</option>
+        ${mesesDeEntrada(CACHE.pacientes || []).map((m) =>
+          `<option value="${m.mes}"${FILTRO.entrada === m.mes ? ' selected' : ''}>${mesLegivel(m.mes)} (${m.qtd})</option>`).join('')}
+      </select></div>
+      <button class="btn ghost" onclick="FILTRO={q:'',objetivo:'',pais:'',plano:'',entrada:''};telaPacientes()">Limpar</button>
     </div>
+    <div id="semDono"></div>
     <div class="card" style="padding:0;overflow:auto"><div id="tabelaPac"></div></div>`;
 
+  avisarSemDono();
   $('#fQ').oninput = () => { FILTRO.q = $('#fQ').value; pintarPacientes(); };
   $('#fObj').onchange = () => { FILTRO.objetivo = $('#fObj').value; pintarPacientes(); };
   $('#fPais').onchange = () => { FILTRO.pais = $('#fPais').value; pintarPacientes(); };
   $('#fPlano').onchange = () => { FILTRO.plano = $('#fPlano').value; pintarPacientes(); };
+  $('#fEntrada').onchange = () => { FILTRO.entrada = $('#fEntrada').value; pintarPacientes(); };
   carregarPacientes();
+}
+
+/* ---------- fichas de formulário sem dono ----------
+   Resposta que não achou paciente nenhum na importação. Fica aqui, visível,
+   em vez de desaparecer no banco ou ser pendurada na pessoa errada. */
+async function avisarSemDono() {
+  let r;
+  try { r = await api('/anamneses/sem-dono'); } catch { return; }
+  CACHE.semDono = r.linhas || [];
+  const n = CACHE.semDono.length;
+  const alvo = $('#semDono');
+  if (!alvo) return;
+  alvo.innerHTML = !n ? '' : `
+    <div class="aviso-leve">
+      <span><b>${n} ficha${n > 1 ? 's' : ''} de formulário sem dono.</b>
+        ${n > 1 ? 'São respostas' : 'É uma resposta'} que não bateu com nenhum
+        paciente — provavelmente lead que não fechou, ou do formulário dos EUA.</span>
+      <button class="btn ghost mini" onclick="abrirSemDono()">Ver e ligar</button>
+    </div>`;
+}
+
+function abrirSemDono() {
+  const lista = CACHE.semDono || [];
+  modal('Fichas sem dono', `
+    <p class="dica">Cada linha é uma resposta de formulário que não achou
+      paciente. Escolha de quem é, ou descarte se não for de ninguém.</p>
+    <div id="sdLista" class="sd-lista">${lista.map(linhaSemDono).join('')}</div>`, `
+    <button class="btn ghost" onclick="fecharModal()">Fechar</button>`);
+}
+
+function linhaSemDono(a) {
+  const pacs = (CACHE.pacientes || []);
+  return `
+    <div class="sd-item" data-id="${a.id}">
+      <div>
+        <b>${esc(a.nome)}</b>
+        <small>${[a.email, a.telefone, a.respondido_em ? dataBR(a.respondido_em) : '',
+          a.origem ? 'form ' + a.origem : ''].filter(Boolean).map(esc).join(' · ')}</small>
+      </div>
+      <div class="sd-acao">
+        <select id="sdP${a.id}">
+          <option value="">Escolher paciente…</option>
+          ${pacs.map((p) => `<option value="${p.id}">${esc(p.nome)}${p.cod ? ' · ' + esc(p.cod) : ''}</option>`).join('')}
+        </select>
+        <button class="btn ouro mini" onclick="ligarSemDono(${a.id})">Ligar</button>
+        <button class="btn ghost mini" onclick="descartarSemDono(${a.id})" title="Descartar">×</button>
+      </div>
+    </div>`;
+}
+
+async function ligarSemDono(id) {
+  const pid = $('#sdP' + id).value;
+  if (!pid) return toast('Escolha o paciente primeiro.');
+  let r;
+  try { r = await api(`/anamneses/${id}/ligar`, { method: 'POST', body: { paciente_id: Number(pid) } }); }
+  catch (e) { return toast(e.message); }
+  toast(`Ficha ligada a ${r.paciente}` + (r.completou ? ' — cadastro completado.' : '.'));
+  tirarSemDono(id);
+  CACHE.pacientes = null;
+  carregarPacientes(true);
+}
+
+async function descartarSemDono(id) {
+  const a = (CACHE.semDono || []).find((x) => x.id === id);
+  if (!confirm(`Descartar a ficha de ${a ? a.nome : 'quem respondeu'}? Não dá para desfazer.`)) return;
+  try { await api('/anamneses/' + id, { method: 'DELETE' }); } catch (e) { return toast(e.message); }
+  tirarSemDono(id);
+}
+
+function tirarSemDono(id) {
+  CACHE.semDono = (CACHE.semDono || []).filter((x) => x.id !== id);
+  const li = $(`#sdLista .sd-item[data-id="${id}"]`);
+  if (li) li.remove();
+  if (!CACHE.semDono.length) { fecharModal(true); }
+  avisarSemDono();
 }
 
 async function carregarPacientes(forcar) {
@@ -707,6 +827,7 @@ async function carregarPacientes(forcar) {
     PAISES = [...new Set([...PAISES_BASE, ...CACHE.pacientes.map((x) => x.pais).filter(Boolean)])].sort();
     if (!PLANOS.length) PLANOS = (await api('/planos')).planos;
   }
+  pintarMesesEntrada();
   pintarPacientes();
 }
 
@@ -716,12 +837,16 @@ function pintarPacientes() {
   const f = FILTRO;
   const q = f.q.trim().toLowerCase();
 
-  // busca atravessa os segmentos: procurar alguém não é navegar
-  const buscando = q.length > 0;
+  // busca e filtro de entrada atravessam os segmentos: "quem entrou em
+  // agosto" é uma pergunta sobre a base toda, não sobre o segmento aberto
+  const buscando = q.length > 0 || !!f.entrada;
 
   const passaFiltro = (x) => {
     if (f.pais && x.pais !== f.pais) return false;
     if (f.objetivo && !(x.objetivo || '').includes(f.objetivo)) return false;
+    if (f.entrada === 'recentes' && !entrouNosUltimos(x, 60)) return false;
+    if (f.entrada && f.entrada !== 'recentes'
+        && String(x.entrada || '').slice(0, 7) !== f.entrada) return false;
     if (f.plano && x.plano_atual !== f.plano) return false;
     if (!q) return true;
     return [x.nome, x.apelido, x.cod, x.email, x.telefone]
@@ -742,15 +867,26 @@ function pintarPacientes() {
 
   const lista = buscando ? filtrados : seg[SEGMENTO];
   const rotulo = SEGMENTOS.find(([k]) => k === SEGMENTO);
-  $('#pacContagem').textContent = buscando
-    ? `${lista.length} encontrado${lista.length === 1 ? '' : 's'} em toda a base`
-    : `${lista.length} · ${rotulo[1].toLowerCase()} · ${base.length} no total`;
+  const porFiltroEntrada = f.entrada === 'recentes' ? 'entraram nos últimos 60 dias'
+    : f.entrada ? `entraram em ${mesLegivel(f.entrada)}` : '';
+  $('#pacContagem').textContent = porFiltroEntrada
+    ? `${lista.length} ${porFiltroEntrada}${q ? ' e batem com a busca' : ''}`
+    : buscando
+      ? `${lista.length} encontrado${lista.length === 1 ? '' : 's'} em toda a base`
+      : `${lista.length} · ${rotulo[1].toLowerCase()} · ${base.length} no total`;
 
-  // a coluna que mais importa muda com o segmento
-  const colDestaque = { acompanhamento: 'Última ficha', renovacao: 'Termina em',
-    devendo: 'Em aberto', leads: 'Entrou', inativos: 'Terminou' }[buscando ? 'acompanhamento' : SEGMENTO];
+  // a coluna que mais importa muda com o segmento — e com o filtro de entrada
+  const porEntrada = !!FILTRO.entrada;
+  const colDestaque = porEntrada ? 'Entrou'
+    : { acompanhamento: 'Última ficha', renovacao: 'Termina em',
+        devendo: 'Em aberto', leads: 'Entrou', inativos: 'Terminou' }[buscando ? 'acompanhamento' : SEGMENTO];
 
   const celDestaque = (x) => {
+    if (porEntrada || (!buscando && SEGMENTO === 'leads')) {
+      if (!x.entrada) return '—';
+      const d = diasDesde(x.entrada);
+      return `${dataBR(x.entrada)}<br><small style="color:var(--txt-2)">há ${d} dia${d === 1 ? '' : 's'}</small>`;
+    }
     if (buscando || SEGMENTO === 'acompanhamento') {
       const d = semFicha(x);
       if (d === null) return '<small style="color:var(--erro)">nenhuma ficha</small>';
@@ -763,7 +899,6 @@ function pintarPacientes() {
     }
     if (SEGMENTO === 'devendo')
       return `<span class="tag devendo">${x.parcelas_abertas} parcela${x.parcelas_abertas === 1 ? '' : 's'}</span>`;
-    if (SEGMENTO === 'leads') return dataBR(x.created_at);
     return dataBR(x.data_final);
   };
 
@@ -2959,70 +3094,226 @@ function horaNoFuso(fuso) {
   } catch { return '—'; }
 }
 
-/* ---------- post-it: acompanha o Luca em todas as telas ---------- */
-let POSTIT_SALVANDO = null;
+/* ---------- tarefas: a listinha que acompanha o Luca em todas as telas ---------- */
+let TAREFAS = { abertas: [], feitas: [], total_feitas: 0 };
+let MOSTRAR_FEITAS = false;
 
-function iniciarPostit() {
-  const caixa = $('#postit');
+function iniciarTarefas() {
+  const caixa = $('#tarefas');
   if (!caixa) return;
   caixa.classList.remove('hide');
-  const guardado = localStorage.getItem('crm_postit');
-  if (guardado) $('#piTexto').value = guardado;
-  if (localStorage.getItem('crm_postit_min') === '1') caixa.classList.add('min');
-
-  $('#piTexto').oninput = () => {
-    localStorage.setItem('crm_postit', $('#piTexto').value);
-    marcarPostit('salvando…');
-    clearTimeout(POSTIT_SALVANDO);
-    POSTIT_SALVANDO = setTimeout(salvarPostit, 900);
+  if (localStorage.getItem('crm_tarefas_min') === '1') caixa.classList.add('min');
+  $('#tfMin').onclick = (ev) => { ev.stopPropagation(); alternarTarefas(); };
+  arrastavel(caixa, $('#tfCabecalho'), () => {
+    if (caixa.classList.contains('min')) alternarTarefas();
+  });
+  posicionarTarefas();
+  addEventListener('resize', posicionarTarefas);
+  $('#tfNova').onkeydown = (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); criarTarefa(); }
+    if (ev.key === 'Escape') { $('#tfNova').value = ''; fecharQuando(); }
   };
-  $('#piMin').onclick = (ev) => { ev.stopPropagation(); alternarPostit(); };
-  $('#piCabecalho').onclick = () => { if (caixa.classList.contains('min')) alternarPostit(); };
-  $('#piOk').onclick = concluirPostit;
-
-  // o que está no servidor manda: ele troca de computador e o bloco vai junto
-  api('/postit').then((r) => {
-    if (r.texto && r.texto !== $('#piTexto').value) {
-      $('#piTexto').value = r.texto;
-      localStorage.setItem('crm_postit', r.texto);
-    }
-    marcarPostit(r.texto ? 'salvo' : '');
-    pintarPostit();
-  }).catch(() => pintarPostit());
-  pintarPostit();
+  $('#tfAdd').onclick = criarTarefa;
+  $('#tfQuando').onclick = (ev) => { ev.preventDefault(); alternarQuando(); };
+  carregarTarefas();
 }
 
-function alternarPostit() {
-  const caixa = $('#postit');
+/* Arrastar pelo cabeçalho, sem sair da janela. Mover e clicar saem do mesmo
+   gesto, então só vira arrasto depois de 4px — abaixo disso é clique. */
+function arrastavel(caixa, puxador, aoClicar) {
+  let x0, y0, ex, ey, arrastou;
+  puxador.style.touchAction = 'none';
+  puxador.onpointerdown = (ev) => {
+    if (ev.target.closest('button') && ev.target !== puxador) return;
+    const r = caixa.getBoundingClientRect();
+    x0 = ev.clientX; y0 = ev.clientY; ex = r.left; ey = r.top; arrastou = false;
+    puxador.setPointerCapture(ev.pointerId);
+    caixa.classList.add('arrastando');
+  };
+  puxador.onpointermove = (ev) => {
+    if (x0 === undefined) return;
+    const dx = ev.clientX - x0, dy = ev.clientY - y0;
+    if (!arrastou && Math.abs(dx) + Math.abs(dy) < 4) return;
+    arrastou = true;
+    colocarTarefas(ex + dx, ey + dy);
+  };
+  const soltar = (ev) => {
+    if (x0 === undefined) return;
+    x0 = undefined;
+    caixa.classList.remove('arrastando');
+    try { puxador.releasePointerCapture(ev.pointerId); } catch { /* já soltou */ }
+    if (arrastou) {
+      const r = caixa.getBoundingClientRect();
+      localStorage.setItem('crm_tarefas_pos', JSON.stringify({ x: r.left, y: r.top }));
+    } else if (aoClicar) aoClicar();
+  };
+  puxador.onpointerup = soltar;
+  puxador.onpointercancel = soltar;
+}
+
+// nunca deixa a caixa escapar da janela — nem ao arrastar, nem ao redimensionar
+function colocarTarefas(x, y) {
+  const caixa = $('#tarefas');
+  if (!caixa) return;
+  const r = caixa.getBoundingClientRect();
+  const margem = 8;
+  const maxX = Math.max(margem, innerWidth - r.width - margem);
+  const maxY = Math.max(margem, innerHeight - r.height - margem);
+  caixa.style.left = Math.min(Math.max(margem, x), maxX) + 'px';
+  caixa.style.top = Math.min(Math.max(margem, y), maxY) + 'px';
+  caixa.style.right = 'auto';
+  caixa.style.bottom = 'auto';
+}
+
+function posicionarTarefas() {
+  const caixa = $('#tarefas');
+  if (!caixa) return;
+  let pos = null;
+  try { pos = JSON.parse(localStorage.getItem('crm_tarefas_pos') || 'null'); } catch { pos = null; }
+  if (!pos) return;                       // sem posição salva, fica no canto do CSS
+  colocarTarefas(pos.x, pos.y);
+}
+
+function alternarTarefas() {
+  const caixa = $('#tarefas');
   caixa.classList.toggle('min');
-  localStorage.setItem('crm_postit_min', caixa.classList.contains('min') ? '1' : '0');
-  if (!caixa.classList.contains('min')) $('#piTexto').focus();
+  localStorage.setItem('crm_tarefas_min', caixa.classList.contains('min') ? '1' : '0');
+  requestAnimationFrame(posicionarTarefas);
+  if (!caixa.classList.contains('min')) $('#tfNova').focus();
 }
 
-function pintarPostit() {
-  const n = $('#piTexto').value.split('\n').filter((l) => l.trim()).length;
-  $('#piContador').textContent = n ? n + (n === 1 ? ' linha' : ' linhas') : 'vazio';
-  $('#postit').classList.toggle('cheio', n > 0);
+function alternarQuando(abrir) {
+  const bloco = $('#tfQuandoCampos');
+  const mostrar = abrir === undefined ? bloco.classList.contains('hide') : abrir;
+  bloco.classList.toggle('hide', !mostrar);
+  $('#tfQuando').classList.toggle('on', mostrar);
+  if (mostrar && !$('#tfData').value) $('#tfData').value = hojeISO();
+}
+function fecharQuando() {
+  $('#tfQuandoCampos').classList.add('hide');
+  $('#tfQuando').classList.remove('on');
+  $('#tfData').value = ''; $('#tfHora').value = '';
 }
 
-function marcarPostit(txt) { $('#piEstado').textContent = txt; pintarPostit(); }
-
-async function salvarPostit() {
-  try {
-    await api('/postit', { method: 'PUT', body: { texto: $('#piTexto').value } });
-    marcarPostit('salvo');
-  } catch { marcarPostit('salvo só neste navegador'); }
+async function carregarTarefas() {
+  try { TAREFAS = await api('/tarefas'); } catch { return; }
+  pintarTarefas();
 }
 
-async function concluirPostit() {
-  if (!$('#piTexto').value.trim()) return toast('O bloco já está vazio.');
-  if (!confirm('Concluir e apagar tudo que está no bloco? Não dá para desfazer.')) return;
-  $('#piTexto').value = '';
-  localStorage.removeItem('crm_postit');
-  clearTimeout(POSTIT_SALVANDO);
-  await salvarPostit();
-  marcarPostit('');
-  toast('Bloco limpo');
+/* "hoje 14:00", "amanhã", "atrasado · 05/10" — o que ele precisa ler de relance */
+function quandoLegivel(t) {
+  if (!t.data) return null;
+  const hoje = hojeISO();
+  const amanha = addDiasISO(hoje, 1);
+  const hora = t.hora ? ' ' + t.hora : '';
+  if (t.data < hoje) return { txt: 'atrasado · ' + dataBR(t.data).slice(0, 5) + hora, classe: 'atrasado' };
+  if (t.data === hoje) return { txt: 'hoje' + hora, classe: 'hoje' };
+  if (t.data === amanha) return { txt: 'amanhã' + hora, classe: '' };
+  return { txt: dataBR(t.data).slice(0, 5) + hora, classe: '' };
+}
+function addDiasISO(iso, n) {
+  const d = new Date(iso + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+function pintarTarefas() {
+  const hoje = hojeISO();
+  const abertas = TAREFAS.abertas;
+  const paraHoje = abertas.filter((t) => t.data && t.data <= hoje).length;
+
+  $('#tfContador').innerHTML = !abertas.length ? 'tudo feito'
+    : `${abertas.length} aberta${abertas.length > 1 ? 's' : ''}` +
+      (paraHoje ? ` · <b class="urgente">${paraHoje} pra hoje</b>` : '');
+  $('#tarefas').classList.toggle('cheio', paraHoje > 0);
+
+  const linha = (t) => {
+    const q = quandoLegivel(t);
+    return `
+      <li class="tf-item${t.feita ? ' feita' : ''}" data-id="${t.id}">
+        <button class="tf-check" onclick="marcarTarefa(${t.id},${t.feita ? 0 : 1})"
+          aria-label="${t.feita ? 'Reabrir' : 'Concluir'} ${esc(t.texto)}">${t.feita ? '✓' : ''}</button>
+        <div class="tf-txt">
+          <span onclick="editarTarefa(${t.id})">${esc(t.texto)}</span>
+          ${q ? `<small class="tf-quando ${q.classe}">${q.txt}</small>` : ''}
+        </div>
+        <button class="tf-x" onclick="excluirTarefa(${t.id})" title="Excluir">×</button>
+      </li>`;
+  };
+
+  $('#tfLista').innerHTML = !abertas.length
+    ? '<li class="tf-vazio">Nenhuma tarefa aberta.</li>'
+    : abertas.map(linha).join('');
+
+  const feitas = TAREFAS.feitas;
+  $('#tfFeitasCab').classList.toggle('hide', !TAREFAS.total_feitas);
+  $('#tfFeitasQtd').textContent = TAREFAS.total_feitas;
+  $('#tfFeitasSeta').textContent = MOSTRAR_FEITAS ? '▾' : '▸';
+  $('#tfFeitas').classList.toggle('hide', !MOSTRAR_FEITAS || !feitas.length);
+  $('#tfFeitas').innerHTML = feitas.map(linha).join('');
+  $('#tfLimpar').classList.toggle('hide', !MOSTRAR_FEITAS || !TAREFAS.total_feitas);
+}
+
+function alternarFeitas() { MOSTRAR_FEITAS = !MOSTRAR_FEITAS; pintarTarefas(); }
+
+async function criarTarefa() {
+  const texto = $('#tfNova').value.trim();
+  if (!texto) return $('#tfNova').focus();
+  const body = { texto, data: $('#tfData').value || null, hora: $('#tfHora').value || null };
+  $('#tfNova').value = '';
+  fecharQuando();
+  try { await api('/tarefas', { method: 'POST', body }); } catch (e) { return toast(e.message); }
+  await carregarTarefas();
+  $('#tfNova').focus();
+}
+
+// risca, espera o olho acompanhar, e só então tira da lista
+async function marcarTarefa(id, feita) {
+  const li = $(`#tarefas .tf-item[data-id="${id}"]`);
+  if (li && feita) li.classList.add('riscando');
+  try { await api('/tarefas/' + id, { method: 'PUT', body: { feita } }); }
+  catch (e) { if (li) li.classList.remove('riscando'); return toast(e.message); }
+  setTimeout(carregarTarefas, feita ? 420 : 0);
+}
+
+async function excluirTarefa(id) {
+  await api('/tarefas/' + id, { method: 'DELETE' });
+  carregarTarefas();
+}
+
+async function limparFeitas() {
+  if (!confirm(`Apagar as ${TAREFAS.total_feitas} tarefas concluídas? Não dá para desfazer.`)) return;
+  const r = await api('/tarefas/limpar', { method: 'POST', body: {} });
+  toast(`${r.apagadas} concluída${r.apagadas > 1 ? 's' : ''} apagada${r.apagadas > 1 ? 's' : ''}`);
+  carregarTarefas();
+}
+
+function editarTarefa(id) {
+  const t = [...TAREFAS.abertas, ...TAREFAS.feitas].find((x) => x.id === id);
+  if (!t) return;
+  modal('Tarefa', `
+    <div><label>O que é</label><input id="edTfTexto" value="${esc(t.texto)}"></div>
+    <div class="grid g2" style="margin-top:10px">
+      <div><label>Dia</label><input id="edTfData" type="date" value="${esc(t.data || '')}"></div>
+      <div><label>Hora</label><input id="edTfHora" type="time" value="${esc(t.hora || '')}"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+      <button class="btn ghost mini" onclick="$('#edTfData').value='${hojeISO()}'">Hoje</button>
+      <button class="btn ghost mini" onclick="$('#edTfData').value='${addDiasISO(hojeISO(), 1)}'">Amanhã</button>
+      <button class="btn ghost mini" onclick="$('#edTfData').value='${addDiasISO(hojeISO(), 7)}'">Semana que vem</button>
+      <button class="btn ghost mini" onclick="$('#edTfData').value='';$('#edTfHora').value=''">Sem data</button>
+    </div>`, `
+    <button class="btn perigo" onclick="fecharModal(true);excluirTarefa(${id})">Excluir</button>
+    <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
+    <button class="btn ouro" id="edTfSalvar">Salvar</button>`);
+  const liberar = travarSeMexer(AVISO_SAIR('a tarefa'));
+  $('#edTfSalvar').onclick = async () => {
+    const texto = $('#edTfTexto').value.trim();
+    if (!texto) return toast('A tarefa precisa de um texto.');
+    await api('/tarefas/' + id, { method: 'PUT', body: {
+      texto, data: $('#edTfData').value || null, hora: $('#edTfHora').value || null } });
+    liberar(); fecharModal(true); carregarTarefas();
+  };
 }
 
 /* ==========================================================

@@ -1,0 +1,13 @@
+DELETE FROM inbody WHERE paciente_id IN (SELECT id FROM pacientes);
+DELETE FROM anexos WHERE paciente_id IN (SELECT id FROM pacientes);
+DELETE FROM wa_fila;
+DELETE FROM interacoes;
+DELETE FROM negociacoes;
+DELETE FROM compromissos;
+DELETE FROM consultas;
+DELETE FROM anamneses;
+DELETE FROM pagamentos;
+DELETE FROM parcelas;
+DELETE FROM contratos;
+DELETE FROM pacientes;
+DELETE FROM sqlite_sequence WHERE name IN ('pacientes','contratos','parcelas','pagamentos','consultas','anamneses','compromissos','negociacoes','interacoes','anexos','inbody','wa_fila');
