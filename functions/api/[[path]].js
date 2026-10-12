@@ -86,7 +86,22 @@ const MOEDA_POR_FORMA = { pix: 'BRL', asaas: 'BRL', infinity: 'BRL', zelle: 'USD
    A AwesomeAPI passou a limitar por cota e responde 429; quando isso
    acontece o painel não pode ficar sem câmbio, então são várias fontes na
    fila e vale a primeira que responder. Todas são públicas e sem chave. */
+/* O Banco Central vem primeiro: é a fonte oficial em reais, sem cota e sem
+   chave. Publica em dia útil, em boletins ao longo do dia — a janela de 8
+   dias garante achar o último boletim mesmo em feriado ou fim de semana. */
+const ptaxData = (d) => `${d.slice(5, 7)}-${d.slice(8, 10)}-${d.slice(0, 4)}`;
+
 const FONTES_COTACAO = [
+  { nome: 'Banco Central (PTAX)',
+    url: (m, h) => 'https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/'
+      + 'CotacaoMoedaPeriodo(moeda=@moeda,dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)'
+      + `?@moeda='${m}'&@dataInicial='${ptaxData(addDias(h, -8))}'`
+      + `&@dataFinalCotacao='${ptaxData(h)}'&$format=json`
+      + '&$orderby=dataHoraCotacao%20desc&$top=1',
+    ler: (j) => { const it = (j && j.value && j.value[0]) || {};
+      // venda é o que o cliente paga para comprar dólar
+      return { taxa: Number(it.cotacaoVenda || it.cotacaoCompra),
+        quando: String(it.dataHoraCotacao || '') }; } },
   { nome: 'AwesomeAPI',
     url: (m) => `https://economia.awesomeapi.com.br/json/last/${m}-BRL`,
     ler: (j) => { const it = j[Object.keys(j)[0]] || {};
@@ -206,7 +221,7 @@ async function cotacaoAgora(env, moeda) {
   const tentadas = [];
   for (const f of FONTES_COTACAO) {
     try {
-      const r = await fetch(f.url(moeda), { headers: { accept: 'application/json' } });
+      const r = await fetch(f.url(moeda, hoje()), { headers: { accept: 'application/json' } });
       if (!r.ok) { tentadas.push(`${f.nome}: HTTP ${r.status}`); continue; }
       const { taxa, quando } = f.ler(await r.json(), moeda);
       if (!(taxa > 0)) { tentadas.push(`${f.nome}: não cobre ${moeda}`); continue; }
@@ -1205,12 +1220,16 @@ export async function onRequest(context) {
           tabelas: ['objetivos', 'form_blocos', 'form_campos', 'fusos_lugar', 'inbody'],
           colunas: [['pacientes', 'cidade'], ['pacientes', 'form_token'],
             ['pacientes', 'inbody_ativo'], ['consultas', 'refeicoes'], ['consultas', 'tmb']] },
+        { migracao: 'migrate-07.sql', o_que: 'lista de tarefas e fichas sem dono',
+          tabelas: ['tarefas'], colunas: [['anamneses', 'extra']] },
+        { migracao: 'migrate-09.sql', o_que: 'calorias da dieta e saldo calórico',
+          tabelas: [], colunas: [['consultas', 'dieta_kcal'], ['pacientes', 'dieta_kcal']] },
       ];
       const existe = await env.DB.prepare(
         "SELECT name FROM sqlite_master WHERE type='table'").all();
       const tabelas = new Set((existe.results || []).map((x) => x.name));
       const colunasDe = {};
-      for (const t of ['pacientes', 'consultas']) {
+      for (const t of ['pacientes', 'consultas', 'anamneses']) {
         if (!tabelas.has(t)) { colunasDe[t] = new Set(); continue; }
         const c = await env.DB.prepare(`PRAGMA table_info(${t})`).all();
         colunasDe[t] = new Set((c.results || []).map((x) => x.name));
@@ -1684,6 +1703,11 @@ export async function onRequest(context) {
         .bind(...comuns, b.cidade || null, fuso, id).run(), null);
       if (!feito) await env.DB.prepare(`${BASE},updated_at=datetime('now') WHERE id=?`)
         .bind(...comuns, id).run();
+      // à parte, para o cadastro continuar salvando em banco sem a migração 09
+      if (b.dieta_kcal !== undefined) await talvez(() => env.DB.prepare(
+        'UPDATE pacientes SET dieta_kcal=? WHERE id=?')
+        .bind(b.dieta_kcal === '' || b.dieta_kcal == null ? null : num(b.dieta_kcal), id)
+        .run(), null);
       return json({ ok: true, fuso });
     }
 
@@ -1836,15 +1860,17 @@ export async function onRequest(context) {
       if (kg && !lbs) lbs = Math.round(kg * 2.20462 * 10) / 10;
       if (lbs && !kg) kg = Math.round((lbs / 2.20462) * 10) / 10;
       const { json: refJson, col, treino } = refeicoesDoCorpo(b);
+      const dieta = b.dieta_kcal === '' || b.dieta_kcal == null ? null : num(b.dieta_kcal);
       const res = await env.DB.prepare(
         `INSERT INTO consultas (paciente_id,data,peso_kg,peso_lbs,treino,cafe,lanche_manha,
-             almoco,lanche_tarde,jantar,ceia,observacoes,refeicoes,objetivo,tmb,get_kcal,fator_atividade)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+             almoco,lanche_tarde,jantar,ceia,observacoes,refeicoes,objetivo,tmb,get_kcal,
+             fator_atividade,dieta_kcal)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ).bind(b.paciente_id, b.data || hoje(), kg, lbs, treino || null, col.cafe,
         col.lanche_manha, col.almoco, col.lanche_tarde, col.jantar,
         col.ceia, b.observacoes || null, refJson, b.objetivo || null,
         b.tmb ? num(b.tmb) : null, b.get_kcal ? num(b.get_kcal) : null,
-        b.fator_atividade ? num(b.fator_atividade) : null).run();
+        b.fator_atividade ? num(b.fator_atividade) : null, dieta).run();
       // o objetivo escolhido na consulta passa a ser o objetivo do paciente
       if (b.objetivo) await env.DB.prepare(
         "UPDATE pacientes SET objetivo=?, updated_at=datetime('now') WHERE id=?")
@@ -1854,6 +1880,14 @@ export async function onRequest(context) {
         await env.DB.prepare(
           "UPDATE pacientes SET altura_cm=?, updated_at=datetime('now') WHERE id=?")
           .bind(num(b.altura_cm), b.paciente_id).run();
+      }
+      /* A dieta de agora fica também no cadastro, para a ficha do paciente
+         mostrar sem ter de abrir a última consulta. Campo em branco apaga: é
+         como ele diz "esse paciente não está com dieta prescrita". */
+      if (b.dieta_kcal !== undefined && b.paciente_id) {
+        await env.DB.prepare(
+          "UPDATE pacientes SET dieta_kcal=?, updated_at=datetime('now') WHERE id=?")
+          .bind(dieta, b.paciente_id).run();
       }
       return json({ ok: true, id: res.meta.last_row_id });
     }
@@ -1865,15 +1899,16 @@ export async function onRequest(context) {
       if (kg && !lbs) lbs = Math.round(kg * 2.20462 * 10) / 10;
       if (lbs && !kg) kg = Math.round((lbs / 2.20462) * 10) / 10;
       const { json: refJson, col, treino } = refeicoesDoCorpo(b);
+      const dieta = b.dieta_kcal === '' || b.dieta_kcal == null ? null : num(b.dieta_kcal);
       await env.DB.prepare(
         `UPDATE consultas SET data=?,peso_kg=?,peso_lbs=?,treino=?,cafe=?,lanche_manha=?,almoco=?,
             lanche_tarde=?,jantar=?,ceia=?,observacoes=?,refeicoes=?,objetivo=?,tmb=?,get_kcal=?,
-            fator_atividade=?,updated_at=datetime('now') WHERE id=?`
+            fator_atividade=?,dieta_kcal=?,updated_at=datetime('now') WHERE id=?`
       ).bind(b.data, kg, lbs, treino || null, col.cafe, col.lanche_manha,
         col.almoco, col.lanche_tarde, col.jantar, col.ceia,
         b.observacoes || null, refJson, b.objetivo || null,
         b.tmb ? num(b.tmb) : null, b.get_kcal ? num(b.get_kcal) : null,
-        b.fator_atividade ? num(b.fator_atividade) : null, id).run();
+        b.fator_atividade ? num(b.fator_atividade) : null, dieta, id).run();
       if (b.objetivo && b.paciente_id) await env.DB.prepare(
         "UPDATE pacientes SET objetivo=?, updated_at=datetime('now') WHERE id=?")
         .bind(b.objetivo, b.paciente_id).run();
@@ -1882,6 +1917,14 @@ export async function onRequest(context) {
         await env.DB.prepare(
           "UPDATE pacientes SET altura_cm=?, updated_at=datetime('now') WHERE id=?")
           .bind(num(b.altura_cm), b.paciente_id).run();
+      }
+      /* A dieta de agora fica também no cadastro, para a ficha do paciente
+         mostrar sem ter de abrir a última consulta. Campo em branco apaga: é
+         como ele diz "esse paciente não está com dieta prescrita". */
+      if (b.dieta_kcal !== undefined && b.paciente_id) {
+        await env.DB.prepare(
+          "UPDATE pacientes SET dieta_kcal=?, updated_at=datetime('now') WHERE id=?")
+          .bind(dieta, b.paciente_id).run();
       }
       return json({ ok: true });
     }

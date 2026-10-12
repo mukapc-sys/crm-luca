@@ -11,7 +11,7 @@ Suba estes arquivos mantendo a estrutura:
 ```
 schema.sql
 schema-uma-linha.sql
-migrate-01.sql … migrate-07.sql
+migrate-01.sql … migrate-09.sql
 functions/_middleware.js
 functions/api/[[path]].js
 public/index.html
@@ -164,16 +164,26 @@ taxa, corrija e o painel bate com o extrato.
 
 ### De onde vem
 
-São quatro fontes públicas, sem chave, na fila; vale a primeira que
+São cinco fontes públicas, sem chave, na fila; vale a primeira que
 responder, e o painel diz qual foi:
 
-1. **AwesomeAPI** — a mais próxima do agora, mas passou a limitar por cota
-   e responde `429` quando estoura
-2. **Frankfurter (BCE)** — dólar, euro, libra, franco, dólar canadense e
+1. **Banco Central (PTAX)** — a oficial em reais, sem cota. Publica em dia
+   útil, em boletins ao longo do dia; a busca pega o último boletim dos
+   oito dias anteriores, então feriado e fim de semana não deixam o painel
+   sem câmbio
+2. **AwesomeAPI** — passou a limitar por cota e responde `429` quando
+   estoura, por isso saiu da frente
+3. **Frankfurter (BCE)** — dólar, euro, libra, franco, dólar canadense e
    australiano, iene; tem série histórica, mas não publica fim de semana
    nem feriado
-3. **ExchangeRate-API** — cobre moedas fora da lista do BCE
-4. **currency-api** — última reserva
+4. **ExchangeRate-API** — cobre moedas fora da lista do BCE, como o peso
+   argentino
+5. **currency-api** — última reserva
+
+A linha acima do campo diz **de que dia** é a cotação. Em dia útil com
+boletim publicado ela diz "de hoje"; no sábado diz "de sexta — a mais
+recente publicada", em vez de passar o número de sexta como se fosse de
+agora.
 
 Vale para a cotação de agora e para a série histórica que a importação usa.
 Se nenhuma responder, o painel **não inventa**: o campo fica vazio, com o
@@ -331,9 +341,36 @@ fica com o Luca. O `migrate-08.sql` desliga essa pergunta; se um dia ele
 quiser oferecê-la a lead frio, é só reativar em *Configurações →
 Perguntas*.
 
+O mesmo botão está dentro do modal de agendamento da agenda: a call
+terminou em venda, ele clica em **Vendeu!** ali mesmo e o pré-cadastro já
+abre preenchido — com o paciente do compromisso, ou, se não houver um
+escolhido, com o nome tirado do título (sem o "Call -" na frente) e a
+observação do agendamento como observação da venda.
+
 No Início há o bloco **Vendeu e falta a ficha**: quem pagou e ainda não
 respondeu o formulário, com o tempo desde o fechamento e o botão de mandar
 o link de novo — é o mesmo link, continua valendo.
+
+## Calorias da dieta e saldo calórico
+
+O campo **Calorias da dieta** fica na ficha de consulta e na visão geral do
+paciente — nos dois lugares ele edita, e o que ele digitar num aparece no
+outro. Preenchido na consulta, atualiza também o cadastro, do mesmo jeito
+que o objetivo.
+
+Ao lado dele, o **saldo calórico**: a dieta menos o gasto energético total,
+com a porcentagem sobre o gasto.
+
+> Gasto 2.000 kcal/dia · dieta 1.400 kcal/dia
+> → **▼ 600 kcal de déficit · 30% abaixo do gasto**
+
+Acima do gasto é superávit (▲), igual é manutenção. A tela mostra o fato e
+não julga: déficit não é bom nem ruim por si — quem diz isso é o objetivo
+do paciente. Por isso cada caso tem seta e palavra, não só cor.
+
+Na visão geral do paciente, TMB e gasto vêm da última ficha de consulta com
+peso e altura; o campo de calorias salva ali mesmo, sem precisar abrir uma
+consulta.
 
 ## Os números da tela, por pessoa
 
@@ -377,6 +414,8 @@ No console do D1, na ordem:
 7. `migrate-07.sql` — lista de tarefas (substitui o bloco de notas)
 8. `migrate-08.sql` — tira a escolha de plano do formulário do paciente
    (um comando só)
+9. `migrate-09.sql` — calorias da dieta na ficha e no cadastro (dois
+   comandos)
 
 Se estiver em dúvida sobre quais já rodaram, o próprio sistema diz: ao
 entrar no painel aparece uma faixa amarela no topo nomeando as migrações

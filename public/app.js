@@ -316,10 +316,13 @@ async function telaHome() {
    vender. Sai daqui com contrato criado e com o link da anamnese preso a esse
    paciente — o cliente completa o resto e não vê plano nenhum para escolher. */
 
-async function preCadastro(pacienteId) {
+async function preCadastro(pacienteId, vindoDe) {
   if (!PLANOS.length) PLANOS = (await api('/planos')).planos;
   let p = {};
   if (pacienteId) p = (await api('/pacientes/' + pacienteId)).paciente || {};
+  else if (vindoDe && vindoDe.nome) p = { nome: vindoDe.nome };   // veio da agenda
+  // a observação do compromisso é a da venda; a do paciente é outra coisa
+  const obsVenda = (vindoDe && vindoDe.obs_venda) || '';
 
   modal('Pré-cadastro da venda', `
     <p class="dica">Preencha o essencial agora, durante a call. O resto o
@@ -361,7 +364,8 @@ async function preCadastro(pacienteId) {
       <div><label>Parcelas</label><input id="pcParc" type="number" min="1" step="1" value="1"></div>
       <div><label>Começa em</label><input id="pcIni" type="date" value="${hojeISO()}"></div>
       <div style="grid-column:1/-1"><label>Observação da venda</label>
-        <input id="pcObs" placeholder="desconto combinado, promessa de bônus, o que ficou acertado"></div>
+        <input id="pcObs" value="${esc(obsVenda)}"
+          placeholder="desconto combinado, promessa de bônus, o que ficou acertado"></div>
     </div>`, `
     <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
     <button class="btn ouro" id="pcSalvar">Salvar e gerar o formulário</button>`);
@@ -1293,12 +1297,78 @@ function fecharModal(forcar) {
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') fecharModal(); });
 
 /* ---------- ficha do paciente ---------- */
+/* Energia do paciente na visão geral: TMB e gasto da última ficha, a dieta
+   prescrita agora e o saldo entre as duas. A dieta se edita aqui mesmo —
+   ele mexe no plano alimentar sem precisar abrir uma consulta. */
+function blocoEnergia(p, ficha) {
+  const tmb = ficha && ficha.tmb ? Number(ficha.tmb) : null;
+  const get = ficha && ficha.get_kcal ? Number(ficha.get_kcal) : null;
+  const s = saldoCalorico(p.dieta_kcal, get);
+  const quando = ficha && ficha.data ? ` · da ficha de ${dataBR(ficha.data)}` : '';
+  return `
+    <div class="kpi-tmb" style="margin-bottom:12px">
+      <div><span>Metabolismo basal (TMB)</span><b>${tmb ? fmtKcal(tmb) : '—'}</b></div>
+      <div><span>Gasto energético total</span><b>${get ? fmtKcal(get) : '—'}</b></div>
+      <div><span>Calorias da dieta</span>
+        <b style="display:flex;align-items:center;gap:8px">
+          <input id="pDieta" type="number" step="1" min="0" value="${p.dieta_kcal ?? ''}"
+                 placeholder="—" style="width:120px;font-size:19px;font-weight:650;padding:4px 8px">
+          <small style="font-size:12px;color:var(--txt-2);font-weight:400">kcal/dia</small>
+          <button class="btn mini ouro hide" id="pDietaSalvar">Salvar</button>
+        </b></div>
+      <div class="saldo" id="pBlocoSaldo" data-tipo="${s ? s.tipo : ''}">
+        <span>Saldo calórico</span>
+        <b id="pSaldo">${s ? `<i>${SETA_SALDO[s.tipo]}</i> ${esc(saldoLegivel(s))}` : '—'}</b>
+        <small id="pSaldoDet">${esc(s ? saldoDetalhe(s)
+          : get ? 'Preencha as calorias da dieta.'
+          : 'Sem gasto energético ainda — preencha peso e altura numa ficha de consulta.')}</small>
+      </div>
+      <div class="obs"><span>${tmb || get
+        ? `Calculado na última consulta${quando}. Peso novo muda esses números.`
+        : 'Os números aparecem assim que houver uma ficha de consulta com peso e altura.'}</span></div>
+    </div>`;
+}
+
+/* Liga o campo de dieta da visão geral: salva no cadastro e repinta o saldo
+   sem fechar a ficha, porque ele ajusta isso várias vezes seguidas. */
+function ligarDietaPaciente(p, ficha) {
+  const campo = $('#pDieta');
+  if (!campo) return;
+  const get = ficha && ficha.get_kcal ? Number(ficha.get_kcal) : null;
+  const botao = $('#pDietaSalvar');
+  const original = String(p.dieta_kcal ?? '');
+
+  const repintar = () => {
+    const s = saldoCalorico(campo.value, get);
+    $('#pBlocoSaldo').dataset.tipo = s ? s.tipo : '';
+    $('#pSaldo').innerHTML = s ? `<i>${SETA_SALDO[s.tipo]}</i> ${esc(saldoLegivel(s))}` : '—';
+    $('#pSaldoDet').textContent = s ? saldoDetalhe(s)
+      : get ? 'Preencha as calorias da dieta.'
+      : 'Sem gasto energético ainda — preencha peso e altura numa ficha de consulta.';
+    botao.classList.toggle('hide', String(campo.value) === original);
+  };
+  campo.oninput = repintar;
+  campo.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); botao.click(); } };
+  botao.onclick = async () => {
+    try {
+      await api('/pacientes/' + p.id, { method: 'PUT',
+        body: { ...p, dieta_kcal: campo.value === '' ? null : campo.value } });
+    } catch (e) { return toast(e.message); }
+    p.dieta_kcal = campo.value === '' ? null : Number(campo.value);
+    toast('Calorias da dieta salvas');
+    botao.classList.add('hide');
+    CACHE.pacientes = null;
+  };
+}
+
 async function abrirPaciente(id, aba) {
   if (!id) return formPaciente(null);
   await carregarObjetivos();
   const d = await api('/pacientes/' + id);
   const p = d.paciente;
   const pesos = d.consultas.filter((c) => c.peso_kg).reverse();
+  // a última ficha é de onde vêm TMB e gasto; a dieta de agora fica no cadastro
+  const ultimaFicha = d.consultas.find((c) => c.tmb || c.get_kcal) || d.consultas[0] || null;
   const primeiro = pesos[0]?.peso_kg, ultimo = pesos[pesos.length - 1]?.peso_kg;
   const dif = primeiro && ultimo ? (ultimo - primeiro) : null;
 
@@ -1319,6 +1389,8 @@ async function abrirPaciente(id, aba) {
           <b style="font-size:19px">${ultimo ? ultimo + ' kg' : '—'}
             ${dif != null ? `<small style="color:${dif < 0 ? 'var(--ok)' : 'var(--alerta)'};font-size:13px"> ${dif > 0 ? '+' : ''}${dif.toFixed(1)} kg</small>` : ''}</b></div>
       </div>
+
+      ${blocoEnergia(p, ultimaFicha)}
       <div class="card" style="margin-bottom:12px">
         <div class="grid g2" style="gap:8px">
           ${[['Código', p.cod], ['Apelido', p.apelido], ['País', p.pais], ['Telefone', p.telefone],
@@ -1394,6 +1466,7 @@ async function abrirPaciente(id, aba) {
     </div>`;
 
   modal(nomeCompleto(p), corpo);
+  ligarDietaPaciente(p, ultimaFicha);
   $$('#abasPac button').forEach((b) => {
     b.onclick = () => {
       $$('#abasPac button').forEach((x) => x.classList.toggle('on', x === b));
@@ -1839,6 +1912,19 @@ async function abrirConsulta(pacienteId, consultaId) {
         <div class="obs"><span id="cTmbNota"></span></div>
       </div>
 
+      <div class="grid g2" style="margin-top:12px">
+        <div><label>Calorias da dieta (kcal/dia)</label>
+          <input id="cDieta" type="number" step="1" min="0"
+                 value="${c.dieta_kcal ?? p.dieta_kcal ?? ''}">
+          <small style="display:block;font-size:12px;color:var(--txt-2);margin-top:4px">
+            O que a dieta que você montou entrega por dia.</small></div>
+        <div class="saldo" id="cBlocoSaldo">
+          <span>Saldo calórico</span>
+          <b id="cSaldo">—</b>
+          <small id="cSaldoDet"></small>
+        </div>
+      </div>
+
       <div id="refLista" style="margin-top:14px"></div>
       <p style="margin:6px 0 0;font-size:12px;color:var(--txt-2)">
         Arraste pelo ⋮⋮ para mudar a ordem do dia.</p>
@@ -1898,12 +1984,26 @@ async function abrirConsulta(pacienteId, consultaId) {
       : `${idade} anos na data da ficha · Harris-Benedict × ${fator}` +
         (anterior && anterior.tmb ? ` · na ficha anterior era ${fmtKcal(kcal(anterior.tmb))}` : '');
     $('#cBlocoTmb').classList.toggle('incompleto', noCadastro.length > 0 || semPeso || semAltura);
+    pintarSaldo();
+  }
+
+  function pintarSaldo() {
+    const s = saldoCalorico($('#cDieta').value, ULTIMO.get ? kcal(ULTIMO.get) : 0);
+    const bloco = $('#cBlocoSaldo');
+    bloco.dataset.tipo = s ? s.tipo : '';
+    $('#cSaldo').innerHTML = !s ? '—'
+      : `<i>${SETA_SALDO[s.tipo]}</i> ${esc(saldoLegivel(s))}`;
+    $('#cSaldoDet').textContent = s ? saldoDetalhe(s)
+      : (Number($('#cDieta').value) > 0
+        ? 'Falta o gasto energético — preencha peso e altura acima.'
+        : 'Preencha as calorias da dieta ao lado.');
   }
 
   ligarPeso('cKg', 'cLbs', recalcular);
   ligarAltura('cAltCm', 'cAltPes', 'cAltPol', recalcular);
   $('#cData').onchange = recalcular;
   $('#cFator').onchange = recalcular;
+  $('#cDieta').oninput = pintarSaldo;
   recalcular();
 
   $('#salvarCons').onclick = async () => {
@@ -1918,6 +2018,7 @@ async function abrirConsulta(pacienteId, consultaId) {
       tmb: ULTIMO.tmb ? kcal(ULTIMO.tmb) : null,
       get_kcal: ULTIMO.get ? kcal(ULTIMO.get) : null,
       fator_atividade: ULTIMO.fator || null,
+      dieta_kcal: $('#cDieta').value === '' ? null : $('#cDieta').value,
     };
     try {
       if (consultaId) await api('/consultas/' + consultaId, { method: 'PUT', body });
@@ -2256,6 +2357,7 @@ async function abrirCompromisso(id, dia) {
   modal(id ? 'Compromisso' : 'Novo compromisso', corpo, `
     ${id ? `<button class="btn perigo" onclick="excluirCompromisso(${id})">Excluir</button>` : ''}
     <button class="btn ghost hide" id="compFicha">Abrir ficha do paciente</button>
+    <button class="btn ouro" id="compVendeu">Vendeu!</button>
     <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
     <button class="btn ouro" id="salvarComp">Salvar</button>`);
 
@@ -2269,6 +2371,22 @@ async function abrirCompromisso(id, dia) {
   ligarBuscaPaciente('mPac', (p) => ajustarFicha(p && p.id));
   ajustarFicha(c.paciente_id);
   const liberarComp = travarSeMexer(AVISO_SAIR('o compromisso'));
+
+  /* Fechou na call que está agendada aqui: abre o pré-cadastro já com o que
+     este compromisso sabe, em vez de ele digitar tudo de novo. */
+  $('#compVendeu').onclick = () => {
+    const pid = $('#mPac').value;
+    const vindo = {
+      // sem paciente escolhido, o título costuma ser o nome de quem ele atendeu
+      nome: pid ? '' : String($('#mTit').value || '')
+        .replace(/^\s*(call|consulta|reuni[ãa]o|atendimento)\s*[-–:]?\s*/i, '').trim(),
+      obs_venda: $('#mObs').value.trim(),
+    };
+    // a trava segue valendo: se ele mexeu no compromisso e não salvou, é
+    // perguntado antes de sair — perder isso calado seria pior
+    if (!fecharModal()) return;
+    preCadastro(pid ? Number(pid) : null, vindo);
+  };
 
   $('#salvarComp').onclick = async () => {
     const body = { titulo: $('#mTit').value.trim(), tipo: $('#mTipo').value,
@@ -2365,6 +2483,36 @@ function ligarAltura(idCm, idPes, idPol, aoMudar) {
     aoMudar && aoMudar();
   };
   pes.oninput = daImperial; pol.oninput = daImperial;
+}
+
+/* ---------- saldo calórico ----------
+   A dieta que o Luca montou contra o gasto do paciente. Abaixo do gasto é
+   déficit, acima é superávit; a porcentagem é sobre o gasto, que é a
+   referência do corpo. Nem déficit nem superávit é bom ou ruim por si: o que
+   diz isso é o objetivo, então a tela mostra o fato, sem julgar. */
+function saldoCalorico(dietaKcal, getKcal) {
+  const d = Number(dietaKcal) || 0;
+  const g = Number(getKcal) || 0;
+  if (!(d > 0) || !(g > 0)) return null;
+  const saldo = d - g;                         // negativo = come menos que gasta
+  const pct = Math.abs(saldo) / g * 100;
+  const tipo = Math.abs(saldo) < 1 ? 'manutencao' : (saldo < 0 ? 'deficit' : 'superavit');
+  return { saldo, pct, tipo, dieta: d, get: g };
+}
+const ROTULO_SALDO = { deficit: 'Déficit', superavit: 'Superávit', manutencao: 'Manutenção' };
+const SETA_SALDO = { deficit: '▼', superavit: '▲', manutencao: '=' };
+
+// "600 kcal de déficit · 30% abaixo do gasto"
+function saldoLegivel(s) {
+  if (!s) return '—';
+  if (s.tipo === 'manutencao') return 'Mantém o gasto';
+  return `${fmtKcal(Math.abs(Math.round(s.saldo * 100) / 100))} de ${ROTULO_SALDO[s.tipo].toLowerCase()}`;
+}
+function saldoDetalhe(s) {
+  if (!s) return '';
+  if (s.tipo === 'manutencao') return 'A dieta entrega o mesmo que o corpo gasta.';
+  const pct = s.pct.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+  return `${pct}% ${s.tipo === 'deficit' ? 'abaixo' : 'acima'} do gasto energético.`;
 }
 
 const kcal = (v) => Math.round(v * 100) / 100;
@@ -4001,12 +4149,17 @@ async function ligarMoeda() {
     const emBR = Number(r.taxa).toLocaleString('pt-BR',
       { minimumFractionDigits: 4, maximumFractionDigits: 4 });
     const fonte = r.fonte ? ` · fonte: ${esc(r.fonte)}` : '';
-    // dizer de quando é a cotação importa: ele fecha preço em cima disso
+    /* De quando é a cotação importa: ele fecha preço em cima disso. O Banco
+       Central publica em dia útil, então num sábado o número mais recente é o
+       de sexta — dizer "de agora" ali seria mentira. */
+    const deHoje = r.dia === hojeISO();
+    const quando = deHoje
+      ? `cotação de hoje${r.hora ? `, das ${r.hora}` : ''}`
+      : `cotação de ${dataBR(r.dia)}${r.hora ? `, das ${r.hora}` : ''} — a mais recente publicada`;
     $('#cvCotacaoNota').innerHTML = r.ao_vivo
-      ? `<b>1 ${moeda.value} = R$ ${emBR}</b> · cotação de agora${r.hora ? `, das ${r.hora}` : ''}${fonte}.
-         Dá para corrigir à mão.`
+      ? `<b>1 ${moeda.value} = R$ ${emBR}</b> · ${quando}${fonte}. Dá para corrigir à mão.`
       : `<b>1 ${moeda.value} = R$ ${emBR}</b> · ${r.dia ? `última conhecida, de ${dataBR(r.dia)}` : 'guardada no sistema'} —
-         não consegui falar com a fonte agora${fonte}. Dá para corrigir à mão.`;
+         não consegui falar com nenhuma fonte agora${fonte}. Dá para corrigir à mão.`;
     daEstrangeira();
   };
 

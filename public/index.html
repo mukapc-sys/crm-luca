@@ -177,6 +177,26 @@ tbody tr:hover{background:#FAFCFE}
 .kpi-tmb .obs span{text-transform:none;letter-spacing:0;font-weight:400;font-size:12.5px;color:var(--txt-2)}
 .kpi-tmb .obs b{font-size:12.5px;color:var(--txt)}
 .kpi-tmb.incompleto{background:#FDF6E6;border-color:#E6D6A8}
+/* saldo calórico: déficit e superávit não são bom nem ruim por si — quem diz
+   isso é o objetivo. Por isso seta + palavra, e cor só para separar os dois. */
+.saldo{background:#F6F8FB;border:1px solid var(--linha);border-radius:10px;padding:11px 14px;
+  display:flex;flex-direction:column;justify-content:center}
+.saldo > span{display:block;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--txt-2);font-weight:700;margin-bottom:3px}
+.saldo > b{font-size:18px;letter-spacing:-.02em;display:flex;align-items:baseline;gap:7px}
+.saldo > b i{font-style:normal;font-size:14px}
+.saldo > small{display:block;font-size:12px;color:var(--txt-2);margin-top:3px;line-height:1.4}
+.saldo[data-tipo="deficit"]{background:#EEF4FB;border-color:#CBDCF0}
+.saldo[data-tipo="deficit"] > b{color:#1E4062}
+.saldo[data-tipo="superavit"]{background:#FDF4E6;border-color:#EFD9AE}
+.saldo[data-tipo="superavit"] > b{color:#8A5A00}
+.saldo[data-tipo="manutencao"] > b{color:var(--txt)}
+/* dentro do bloco de TMB o saldo é uma célula a mais, não uma caixa dentro de
+   outra: fica só a listra lateral para separar os dois casos */
+.kpi-tmb .saldo{background:none;border:0;border-left:3px solid var(--linha);
+  border-radius:0;padding:0 0 0 11px}
+.kpi-tmb .saldo[data-tipo="deficit"]{border-left-color:#1E4062}
+.kpi-tmb .saldo[data-tipo="superavit"]{border-left-color:#C77700}
 
 /* ---------- cabeçalho do InBody na ficha ---------- */
 .inbody-cab{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;background:#F6F8FB;

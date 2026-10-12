@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS pacientes (
   form_token TEXT,
   inbody_ativo INTEGER NOT NULL DEFAULT 0,
   inbody_modelo TEXT,
-  inbody_plano TEXT
+  inbody_plano TEXT,
+  dieta_kcal REAL
 );
 CREATE INDEX IF NOT EXISTS idx_pac_cod    ON pacientes(cod);
 CREATE INDEX IF NOT EXISTS idx_pac_status ON pacientes(status);
@@ -161,7 +162,8 @@ CREATE TABLE IF NOT EXISTS consultas (
   objetivo TEXT,
   tmb REAL,
   get_kcal REAL,
-  fator_atividade REAL
+  fator_atividade REAL,
+  dieta_kcal REAL
 );
 CREATE INDEX IF NOT EXISTS idx_cons_pac ON consultas(paciente_id, data);
 CREATE TABLE IF NOT EXISTS compromissos (
