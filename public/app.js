@@ -2169,6 +2169,8 @@ async function abrirPagamento(pacienteId, parcelaId, valor, moeda) {
    AGENDA
    ========================================================== */
 let MES = new Date();
+const DIAS_SEMANA = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
+
 async function telaAgenda() {
   const ini = new Date(MES.getFullYear(), MES.getMonth(), 1);
   const fim = new Date(MES.getFullYear(), MES.getMonth() + 1, 0);
@@ -2178,33 +2180,45 @@ async function telaAgenda() {
   const porDia = {};
   compromissos.forEach((c) => { (porDia[c.inicio.slice(0, 10)] ||= []).push(c); });
 
+  /* Cabeçalho e dias na MESMA grade: eram duas grades irmãs, e bastava um
+     título comprido esticar uma coluna para as duas se desencontrarem. */
+  const hoje = hojeISO();
+  const diaDaSemanaHoje = MES.getFullYear() === new Date().getFullYear()
+    && MES.getMonth() === new Date().getMonth() ? new Date().getDay() : -1;
+
+  const cels = DIAS_SEMANA.map((d, i) =>
+    `<div class="ag-cab${i === diaDaSemanaHoje ? ' hoje' : ''}">${d}</div>`);
+
   const primeiroDiaSemana = ini.getDay();
-  const cels = [];
-  for (let i = 0; i < primeiroDiaSemana; i++) cels.push('<div></div>');
+  for (let i = 0; i < primeiroDiaSemana; i++) cels.push('<div class="ag-vazio"></div>');
+
   for (let d = 1; d <= fim.getDate(); d++) {
     const dia = iso(new Date(MES.getFullYear(), MES.getMonth(), d));
     const evs = porDia[dia] || [];
-    const eHoje = dia === hojeISO();
-    cels.push(`<div class="card" style="padding:8px;min-height:96px;${eHoje ? 'border-color:var(--ouro);border-width:2px' : ''}"
+    const eHoje = dia === hoje;
+    const ds = new Date(MES.getFullYear(), MES.getMonth(), d).getDay();
+    cels.push(`<div class="ag-dia${eHoje ? ' hoje' : ''}${ds === 0 || ds === 6 ? ' fds' : ''}"
         ondblclick="abrirCompromisso(null,'${dia}')">
-      <div style="font-size:12px;font-weight:700;color:${eHoje ? 'var(--ouro)' : 'var(--txt-2)'};margin-bottom:5px">${d}</div>
+      <div class="ag-num">${d}<small>${DIAS_SEMANA[ds]}</small></div>
       ${evs.map((e) => {
         const cor = CORES_COMPROMISSO[e.status] || CORES_COMPROMISSO.marcado;
         const quem = e.paciente_apelido || e.paciente_nome;
         const arroba = perfilInsta(e.paciente_instagram);
-        return `<div onclick="abrirCompromisso(${e.id})" title="${esc(e.titulo)}${quem ? ' · ' + esc(quem) : ''}"
-          style="cursor:pointer;font-size:11.5px;background:${cor.bg};color:${cor.txt};
-                 border-left:3px solid ${cor.borda};padding:3px 6px;border-radius:5px;margin-bottom:3px;
-                 overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-          <b>${horaBR(e.inicio)}</b> ${esc(e.titulo)}${quem ? ` · <b>${esc(quem)}</b>` : ''}</div>
-          ${arroba ? `<a href="${arroba.url}" target="_blank" rel="noopener"
+        /* Em coluna de 150px cada caractere conta: se o título já traz o nome
+           do paciente, repetir só comia o espaço e cortava os dois. */
+        const repete = quem && semAcento(e.titulo).includes(semAcento(quem));
+        return `<div class="ag-ev" onclick="abrirCompromisso(${e.id})"
+          title="${esc(e.titulo)}${quem ? ' · ' + esc(quem) : ''}"
+          style="background:${cor.bg};color:${cor.txt};border-left-color:${cor.borda}">
+          <b>${horaBR(e.inicio)}</b> ${esc(e.titulo)}${quem && !repete ? ` · <b>${esc(quem)}</b>` : ''}</div>
+          ${arroba ? `<a class="ag-insta" href="${arroba.url}" target="_blank" rel="noopener"
             onclick="event.stopPropagation()" title="Abrir o Instagram de ${esc(quem || '')}"
-            style="display:block;font-size:11px;color:var(--navy-3);text-decoration:none;
-                   padding:0 6px 3px 12px;margin-top:-2px;margin-bottom:3px;
-                   overflow:hidden;text-overflow:ellipsis;white-space:nowrap">↗ ${esc(arroba.arroba)}</a>` : ''}`;
+            >↗ ${esc(arroba.arroba)}</a>` : ''}`;
       }).join('')}
     </div>`);
   }
+  // completa a última semana para a grade não terminar picotada
+  while ((cels.length - 7) % 7) cels.push('<div class="ag-vazio"></div>');
 
   $('#tela').innerHTML = `
     <div class="topo">
@@ -2220,13 +2234,11 @@ async function telaAgenda() {
         <b style="align-self:center;min-width:150px;text-align:center;text-transform:capitalize">
           ${MES.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}</b>
         <button class="btn ghost" onclick="MES=new Date(MES.getFullYear(),MES.getMonth()+1,1);telaAgenda()">→</button>
+        <button class="btn ghost" onclick="MES=new Date();telaAgenda()">Hoje</button>
         <button class="btn ouro" onclick="abrirCompromisso()">+ Compromisso</button>
       </div>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:6px">
-      ${['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'].map((d) => `<div style="font-size:11px;font-weight:700;color:var(--txt-2);text-transform:uppercase;text-align:center;padding:4px">${d}</div>`).join('')}
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px">${cels.join('')}</div>`;
+    <div class="ag-grade">${cels.join('')}</div>`;
 }
 
 /* ---------- escolher paciente digitando ----------

@@ -351,6 +351,24 @@ No Início há o bloco **Vendeu e falta a ficha**: quem pagou e ainda não
 respondeu o formulário, com o tempo desde o fechamento e o botão de mandar
 o link de novo — é o mesmo link, continua valendo.
 
+## Agenda
+
+Cabeçalho dos dias da semana e as células do mês são **uma grade só**. Eram
+duas grades irmãs com as mesmas colunas, e bastava um compromisso de título
+comprido esticar uma coluna para o "QUI" parar em cima de quarta: as
+colunas usavam `1fr`, que cresce com o conteúdo. Agora é
+`minmax(0,1fr)` numa grade única — não há duas coisas para manter em sincronia.
+
+Junto disso: o cabeçalho gruda no topo ao rolar, o dia da semana de hoje
+fica em dourado, os dias de outro mês viram células fantasma (a semana se lê
+inteira, sem buraco), sábado e domingo têm fundo levemente diferente e há um
+botão **Hoje** para voltar ao mês atual.
+
+Quando o título do compromisso já contém o nome do paciente, o nome não é
+repetido ao lado — em coluna de 150px isso cortava os dois. No celular a
+grade vira uma coluna, cada dia mostra a própria sigla e os títulos quebram
+em linha em vez de cortar.
+
 ## Calorias da dieta e saldo calórico
 
 O campo **Calorias da dieta** fica na ficha de consulta e na visão geral do
