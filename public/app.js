@@ -179,9 +179,11 @@ async function telaHome() {
   const deHoje = d.cobrancas.filter((c) => c.situacao === 'hoje');
   const proximas = d.cobrancas.filter((c) => c.situacao === 'proxima');
   const callsHoje = d.calls.filter((c) => c.dias <= 0);
+  const compHoje = (d.agenda || []).filter((a) => String(a.inicio || '').slice(0, 10) <= h);
 
   // o contador do menu é só o que precisa de ação HOJE
-  const agir = callsHoje.length + d.follow_venda.length + atrasadas.length + deHoje.length;
+  const agir = callsHoje.length + compHoje.length + d.follow_venda.length
+    + atrasadas.length + deHoje.length;
   const bd = $('#bdHome');
   if (agir) { bd.textContent = agir; bd.classList.remove('hide'); } else bd.classList.add('hide');
   const bdF = $('#bdFunil');
@@ -204,7 +206,7 @@ async function telaHome() {
     <div class="linha-aviso">
       <span class="tag ${c.dias < 0 ? 'atrasada' : c.dias === 0 ? 'hoje' : 'proxima'}">
         ${c.dias < 0 ? 'atrasada' : c.dias === 0 ? horaBR(c.call_em) || 'hoje' : dataBR(c.call_em)}</span>
-      <div class="txt"><b>${nomeCompleto(c)}</b>
+      <div class="txt"><b><span class="de-onde venda">Call de venda</span> ${nomeCompleto(c)}</b>
         <small>${esc(c.origem || 'Direct')}${c.objetivo ? ' · ' + esc(c.objetivo) : ''}${c.valor_previsto ? ' · ' + money(c.valor_previsto, c.moeda) : ''}</small></div>
       <button class="btn zap mini" onclick="waEnviar(${c.paciente_id},'followup_venda',{data_call:'${dataBR(c.call_em)}',hora_call:'${horaBR(c.call_em)}'},telaHome)">WhatsApp</button>
       <button class="btn mini" onclick="resultadoCall(${c.id})">Resultado</button>
@@ -240,10 +242,15 @@ async function telaHome() {
   const linhaAg = (a) => {
     const cor = CORES_COMPROMISSO[a.status] || CORES_COMPROMISSO.marcado;
     const quem = a.paciente_apelido || a.paciente_nome;
+    const arroba = perfilInsta(a.paciente_instagram);
     return `<div class="linha-aviso">
       <span class="tag" style="background:${cor.bg};color:${cor.txt}">${horaBR(a.inicio) || 'dia todo'}</span>
-      <div class="txt"><b>${esc(a.titulo)}${quem ? ` · ${esc(quem)}` : ''}</b>
-        <small>${dataBR(a.inicio)}${a.local ? ' · ' + esc(a.local) : ''}</small></div>
+      <div class="txt">
+        <b><span class="de-onde agenda">${ROTULO_COMP[a.tipo] || 'Agenda'}</span>
+          ${esc(a.titulo)}${quem ? ` · ${esc(quem)}` : ''}</b>
+        <small>${dataBR(a.inicio)}${a.local ? ' · ' + esc(a.local) : ''}${
+          arroba ? ` · <a href="${arroba.url}" target="_blank" rel="noopener">${esc(arroba.arroba)}</a>` : ''}</small></div>
+      <button class="btn mini ghost" onclick="abrirCompromisso(${a.id})">Abrir</button>
       ${a.paciente_id ? `<button class="btn mini ghost" onclick="abrirPaciente(${a.paciente_id})">Ficha</button>` : ''}
     </div>`;
   };
@@ -256,6 +263,26 @@ async function telaHome() {
       <button class="btn zap mini" onclick="reenviarFicha(${f.paciente_id})">Mandar o link</button>
       <button class="btn mini ghost" onclick="abrirPaciente(${f.paciente_id})">Ficha</button>
     </div>`;
+
+  /* Call do funil e compromisso da agenda são coisas diferentes no banco, mas
+     o dia dele é um só: na tela de início vão juntos, em ordem de hora, com
+     uma etiqueta dizendo o que é cada um. */
+  const ROTULO_COMP = { consulta: 'Consulta', followup: 'Follow-up',
+    cobranca: 'Cobrança', pessoal: 'Pessoal' };
+
+  const doDia = [
+    ...d.calls.map((c) => ({
+      ord: c.call_em || '', quando: c.call_em, atrasado: c.dias < 0,
+      hoje: c.dias <= 0, html: linhaCall(c),
+    })),
+    ...(d.agenda || []).map((a) => ({
+      ord: a.inicio || '', quando: a.inicio, atrasado: false,
+      hoje: String(a.inicio || '').slice(0, 10) <= h, html: linhaAg(a),
+    })),
+  ].sort((x, y) => String(x.ord).localeCompare(String(y.ord)));
+
+  const agendaHoje = doDia.filter((x) => x.hoje);
+  const agendaDepois = doDia.filter((x) => !x.hoje);
 
   const bloco = (titulo, itens, render, vazio, destaque) => `
     <div class="card"${destaque && itens.length ? ' style="border-color:var(--ouro);border-width:2px"' : ''}>
@@ -294,8 +321,8 @@ async function telaHome() {
     </div>
 
     <div class="grid g2">
-      ${bloco('Calls', [...callsHoje, ...d.calls.filter((c) => c.dias > 0)], linhaCall,
-        'Nenhuma call agendada. Hora de prospectar.', true)}
+      ${bloco('Hoje — calls e compromissos', agendaHoje, (x) => x.html,
+        'Nada marcado para hoje. Hora de prospectar.', true)}
       ${bloco('Follow-ups combinados para hoje', d.follow_venda, linhaFollow,
         'Nenhum follow-up para hoje.', true)}
       ${bloco('Cobranças', [...atrasadas, ...deHoje, ...proximas], linhaCob,
@@ -304,7 +331,8 @@ async function telaHome() {
         'Nenhum plano terminando nos próximos 30 dias.')}
       ${bloco('Vendeu e falta a ficha', d.esperando_ficha || [], linhaFicha,
         'Todo mundo que fechou já respondeu o formulário.', true)}
-      ${bloco('Agenda dos próximos 7 dias', d.agenda, linhaAg, 'Nenhum compromisso marcado.')}
+      ${bloco('Próximos 7 dias', agendaDepois, (x) => x.html,
+        'Nada marcado para os próximos dias.')}
       ${bloco('Pacientes sem consulta recente', d.followups, (f) => `
         <div class="linha-aviso">
           <span class="tag ${f.dias_sem_registro > 30 ? 'atrasada' : 'hoje'}">${f.dias_sem_registro}d</span>

@@ -299,6 +299,22 @@ com a folha deitada em A4, sem a animação e sem os botões — é só escolher
 *Salvar como PDF* no diálogo. Os valores não saem embaçados mesmo com o
 olho ligado.
 
+## O dia dele numa lista só
+
+Call de venda e compromisso da agenda são coisas diferentes no banco — uma
+vem do funil, a outra da agenda — mas o dia do Luca é um só. No Início elas
+aparecem juntas:
+
+- **Hoje — calls e compromissos**: tudo que é de hoje (e o que ficou
+  atrasado), em ordem de hora, com uma etiqueta dizendo o que é cada linha:
+  *Call de venda*, *Consulta*, *Follow-up*, *Cobrança* ou *Pessoal*.
+- **Próximos 7 dias**: o resto, sem repetir o que já está acima.
+
+Cada linha da agenda tem **Abrir** (o compromisso) e **Ficha** (o paciente),
+e mostra o Instagram dele quando houver — é o que o Luca usa para lembrar de
+quem se trata antes de entrar na call. O contador vermelho do menu conta os
+compromissos de hoje junto com as calls e as cobranças.
+
 ## Lembrete de compromisso
 
 Uma hora antes de cada compromisso marcado, a tela mostra um aviso com som:

@@ -862,7 +862,14 @@ export async function onRequest(context) {
         dias: diffDias(r.vencimento, h),
       }));
 
-      const agenda = await env.DB.prepare(
+      // o instagram vem junto: no Início ele quer lembrar quem é a pessoa
+      const agenda = await talvez(() => env.DB.prepare(
+        `SELECT c.*, pa.nome paciente_nome, pa.apelido paciente_apelido, pa.cod paciente_cod,
+                pa.instagram paciente_instagram
+           FROM compromissos c LEFT JOIN pacientes pa ON pa.id=c.paciente_id
+          WHERE c.status='marcado' AND substr(c.inicio,1,10) BETWEEN ? AND ?
+          ORDER BY c.inicio ASC LIMIT 50`).bind(h, em7).all(), null)
+        || await env.DB.prepare(
         `SELECT c.*, pa.nome paciente_nome, pa.apelido paciente_apelido, pa.cod paciente_cod
            FROM compromissos c LEFT JOIN pacientes pa ON pa.id=c.paciente_id
           WHERE c.status='marcado' AND substr(c.inicio,1,10) BETWEEN ? AND ?
