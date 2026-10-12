@@ -116,11 +116,38 @@ function sair(expirou) {
 }
 $('#btnSair').onclick = () => sair(false);
 
+/* ---------- olho ----------
+   Atende presencial: o paciente vê o monitor. Um clique embaça faturamento,
+   valores e totais; o que é do próprio paciente continua à mostra. */
+function alternarSigilo(ligar) {
+  const on = ligar === undefined ? !document.body.classList.contains('sigilo') : ligar;
+  document.body.classList.toggle('sigilo', on);
+  const b = $('#olho');
+  if (b) {
+    b.classList.toggle('on', on);
+    b.innerHTML = on ? '🙈 Mostrar valores' : '👁 Ocultar valores';
+    b.title = on ? 'Mostrar os valores de novo' : 'Ocultar os valores da tela';
+  }
+  try { localStorage.setItem('crm_sigilo', on ? '1' : '0'); } catch { /* navegador trancado */ }
+}
+$('#olho').onclick = () => alternarSigilo();
+
+/* ---------- scroll não mexe em data, hora nem número ----------
+   Ele preenche a data e rola a página; o cursor estava sobre o campo e o
+   navegador trocava o valor sem ele ver. Teclado e setas seguem funcionando. */
+addEventListener('wheel', (ev) => {
+  const a = document.activeElement;
+  if (!a || a !== ev.target) return;
+  if (!/^(date|time|datetime-local|month|week|number)$/.test(a.type || '')) return;
+  a.blur();                       // tira o foco: sem foco o navegador não altera
+}, { passive: true, capture: true });
+
 async function entrarApp() {
   $('#login').classList.add('hide'); $('#app').classList.remove('hide');
   PLANOS = (await api('/planos')).planos;
   await carregarObjetivos(true);
   iniciarTarefas();
+  try { alternarSigilo(localStorage.getItem('crm_sigilo') === '1'); } catch { /* idem */ }
   conferirBanco();
   irPara('home');
 }
@@ -217,6 +244,15 @@ async function telaHome() {
     </div>`;
   };
 
+  const linhaFicha = (f) => `
+    <div class="linha-aviso">
+      <span class="tag ${f.dias > 3 ? 'atrasada' : 'hoje'}">${f.dias <= 0 ? 'hoje' : f.dias + 'd'}</span>
+      <div class="txt"><b>${nomeCompleto(f)}</b>
+        <small>Fechou ${esc(f.codigo_plano || 'o plano')} em ${dataBR(f.data_inicial)} · formulário ainda não respondido</small></div>
+      <button class="btn zap mini" onclick="reenviarFicha(${f.paciente_id})">Mandar o link</button>
+      <button class="btn mini ghost" onclick="abrirPaciente(${f.paciente_id})">Ficha</button>
+    </div>`;
+
   const bloco = (titulo, itens, render, vazio, destaque) => `
     <div class="card"${destaque && itens.length ? ' style="border-color:var(--ouro);border-width:2px"' : ''}>
       <h3>${titulo} ${itens.length ? `<span class="tag" style="margin-left:6px">${itens.length}</span>` : ''}</h3>
@@ -227,25 +263,27 @@ async function telaHome() {
     <div class="topo">
       <div><h1>Início</h1><p>${new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric', timeZone: 'America/Sao_Paulo' })}</p></div>
       <div class="dir">
+        <button class="btn ghost" onclick="irPara('agenda')">Agenda</button>
         <button class="btn ghost" onclick="abrirCalculadora()">Calculadora</button>
         <button class="btn ghost" onclick="abrirCompromisso()">+ Compromisso</button>
         <button class="btn ghost" onclick="novoLead()">+ Lead</button>
-        <button class="btn ouro" onclick="abrirPaciente()">+ Paciente</button>
+        <button class="btn ghost" onclick="abrirPaciente()">+ Paciente</button>
+        <button class="btn ouro" onclick="preCadastro()">Vendeu! Pré-cadastro</button>
       </div>
     </div>
 
     <div class="grid g4" style="margin-bottom:16px">
-      <div class="kpi"><span>Fechamento do mês</span>
-        <b>${taxa != null ? taxa + '%' : '—'}</b>
+      <div ${verCard('fechamento')}><span>Fechamento do mês</span>
+        <b class="sigiloso">${taxa != null ? taxa + '%' : '—'}</b>
         <small style="color:var(--txt-2)">${fm.fechou || 0} de ${decididas || 0} calls decididas</small></div>
-      <div class="kpi"><span>Recebido no mês</span>
-        <b style="font-size:21px">${money(recMes, 'BRL')}</b>
-        <small style="color:${varMes == null ? 'var(--txt-2)' : varMes >= 0 ? 'var(--ok)' : 'var(--erro)'}">
+      <div ${verCard('recebido')}><span>Recebido no mês</span>
+        <b style="font-size:21px" class="sigiloso">${money(recMes, 'BRL')}</b>
+        <small class="sigiloso" style="color:${varMes == null ? 'var(--txt-2)' : varMes >= 0 ? 'var(--ok)' : 'var(--erro)'}">
           ${varMes == null ? 'sem base anterior' : `${varMes >= 0 ? '+' : ''}${varMes}% vs mês passado`}</small></div>
-      <div class="kpi"><span>A receber</span>
-        <b style="font-size:17px;line-height:1.4">${receberLinhas}</b>
+      <div ${verCard('a_receber')}><span>A receber</span>
+        <b style="font-size:17px;line-height:1.4" class="sigiloso">${receberLinhas}</b>
         <small style="color:var(--txt-2)">${d.a_receber.reduce((s, r) => s + Number(r.qtd || 0), 0)} parcelas</small></div>
-      <div class="kpi"><span>Pacientes ativos</span>
+      <div ${verCard('ativos')}><span>Pacientes ativos</span>
         <b>${cont('ativo')}</b>
         <small style="color:${d.renovacoes.length ? 'var(--alerta)' : 'var(--txt-2)'}">
           ${d.renovacoes.length} em renovação</small></div>
@@ -260,6 +298,8 @@ async function telaHome() {
         'Nada a cobrar nos próximos 7 dias.')}
       ${bloco('Renovações em aberto', d.renovacoes, linhaRen,
         'Nenhum plano terminando nos próximos 30 dias.')}
+      ${bloco('Vendeu e falta a ficha', d.esperando_ficha || [], linhaFicha,
+        'Todo mundo que fechou já respondeu o formulário.', true)}
       ${bloco('Agenda dos próximos 7 dias', d.agenda, linhaAg, 'Nenhum compromisso marcado.')}
       ${bloco('Pacientes sem consulta recente', d.followups, (f) => `
         <div class="linha-aviso">
@@ -269,6 +309,204 @@ async function telaHome() {
           <button class="btn mini" onclick="abrirConsulta(${f.id})">Nova ficha</button>
         </div>`, 'Acompanhamento em dia.')}
     </div>`;
+}
+
+/* ---------- pré-cadastro de venda ----------
+   Preenchido na call, com o plano e a forma de pagamento que ele acabou de
+   vender. Sai daqui com contrato criado e com o link da anamnese preso a esse
+   paciente — o cliente completa o resto e não vê plano nenhum para escolher. */
+
+async function preCadastro(pacienteId) {
+  if (!PLANOS.length) PLANOS = (await api('/planos')).planos;
+  let p = {};
+  if (pacienteId) p = (await api('/pacientes/' + pacienteId)).paciente || {};
+
+  modal('Pré-cadastro da venda', `
+    <p class="dica">Preencha o essencial agora, durante a call. O resto o
+      paciente completa no formulário que sai daqui.</p>
+
+    <div class="grid g2">
+      <div><label>Nome completo *</label><input id="pcNome" value="${esc(p.nome || '')}"></div>
+      <div><label>Como você chama</label><input id="pcApelido" value="${esc(p.apelido || '')}"
+        placeholder="apelido que você usa na agenda"></div>
+      <div><label>WhatsApp</label><input id="pcTel" value="${esc(p.telefone || '')}"
+        placeholder="+55 51 99999-9999"></div>
+      <div><label>E-mail</label><input id="pcEmail" type="email" value="${esc(p.email || '')}"></div>
+      <div><label>Instagram</label><input id="pcInsta" value="${esc(p.instagram || '')}"
+        placeholder="@perfil"></div>
+      <div><label>País</label><select id="pcPais">
+        ${PAISES_BASE.map((x) => `<option${(p.pais || 'Brasil') === x ? ' selected' : ''}>${esc(x)}</option>`).join('')}
+      </select></div>
+      <div style="grid-column:1/-1"><label>Cidade</label>
+        <input id="pcCidade" value="${esc(p.cidade || '')}" placeholder="Porto Alegre · Austin, TX">
+        <input type="hidden" id="pcFusoVal" value="${esc(p.fuso || '')}">
+        <small id="pcFuso" style="display:block;font-size:12px;color:var(--txt-2);margin-top:4px"></small></div>
+    </div>
+
+    <h3 style="margin:18px 0 8px;font-size:14px">O que foi vendido</h3>
+    <div class="grid g2">
+      <div><label>Plano *</label><select id="pcPlano">
+        <option value="">— escolher —</option>
+        ${PLANOS.map((x) => `<option value="${x.id}" data-brl="${x.preco_brl}" data-usd="${x.preco_usd}">${esc(x.codigo)} · ${esc(x.nome)}</option>`).join('')}
+      </select></div>
+      <div><label>Forma de pagamento</label><select id="pcForma">
+        <option value="">— escolher —</option>
+        ${FORMAS.map((x) => `<option value="${x}">${x[0].toUpperCase() + x.slice(1)}</option>`).join('')}
+      </select></div>
+      <div><label>Moeda</label><select id="pcMoeda">
+        ${['BRL', 'USD', 'EUR', 'GBP'].map((x) => `<option>${x}</option>`).join('')}</select></div>
+      <div><label>Valor fechado</label><input id="pcValor" type="number" step="0.01">
+        <small id="pcAvisoValor" style="display:block;font-size:12px;color:var(--alerta);margin-top:4px"></small></div>
+      <div><label>Parcelas</label><input id="pcParc" type="number" min="1" step="1" value="1"></div>
+      <div><label>Começa em</label><input id="pcIni" type="date" value="${hojeISO()}"></div>
+      <div style="grid-column:1/-1"><label>Observação da venda</label>
+        <input id="pcObs" placeholder="desconto combinado, promessa de bônus, o que ficou acertado"></div>
+    </div>`, `
+    <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
+    <button class="btn ouro" id="pcSalvar">Salvar e gerar o formulário</button>`);
+
+  ligarCidadeFuso('pcCidade', 'pcPais', 'pcFusoVal', 'pcFuso');
+  const liberar = travarSeMexer(AVISO_SAIR('o pré-cadastro'));
+
+  // a moeda segue a forma de pagamento, e o valor segue o plano: é o que ele
+  // faria à mão toda vez, e errar aqui vira cobrança errada depois
+  const MOEDA_DA_FORMA = { pix: 'BRL', asaas: 'BRL', infinity: 'BRL', cartão: 'BRL',
+    zelle: 'USD', paypal: 'USD' };
+  const preencherValor = () => {
+    const o = $('#pcPlano').selectedOptions[0];
+    const aviso = $('#pcAvisoValor');
+    if (!o || !o.value) { aviso.textContent = ''; return; }
+    const m = $('#pcMoeda').value;
+    const v = m === 'USD' ? o.dataset.usd : o.dataset.brl;
+    if (v && Number(v) > 0) {
+      $('#pcValor').value = Number(v).toFixed(2);
+      aviso.textContent = '';
+    } else {
+      // o plano não tem preço nessa moeda: melhor dizer do que deixar em branco
+      aviso.textContent = `Esse plano não tem preço em ${m} cadastrado — digite o valor.`;
+    }
+  };
+  $('#pcForma').onchange = () => {
+    const m = MOEDA_DA_FORMA[$('#pcForma').value.toLowerCase()];
+    if (m) { $('#pcMoeda').value = m; preencherValor(); }
+  };
+  $('#pcPlano').onchange = preencherValor;
+  $('#pcMoeda').onchange = preencherValor;
+
+  $('#pcSalvar').onclick = async () => {
+    const nome = $('#pcNome').value.trim();
+    if (!nome) return toast('Informe o nome de quem fechou.');
+    if (!$('#pcPlano').value) return toast('Escolha o plano que foi vendido.');
+    // valor zerado não gera cobrança nenhuma: ou é cortesia, ou é descuido
+    if (!(Number($('#pcValor').value) > 0)
+        && !confirm('Sem valor, nenhuma cobrança é criada. É cortesia ou parceria?')) {
+      return $('#pcValor').focus();
+    }
+    const body = {
+      paciente_id: pacienteId || null, nome, apelido: $('#pcApelido').value.trim(),
+      telefone: $('#pcTel').value.trim(), email: $('#pcEmail').value.trim(),
+      instagram: $('#pcInsta').value.trim(), pais: $('#pcPais').value,
+      cidade: $('#pcCidade').value.trim(),
+      plano_id: Number($('#pcPlano').value), forma: $('#pcForma').value,
+      moeda: $('#pcMoeda').value, valor_cobrado: $('#pcValor').value,
+      qtd_parcelas: $('#pcParc').value || 1, data_inicial: $('#pcIni').value || hojeISO(),
+      obs: $('#pcObs').value.trim() || null,
+    };
+    let r;
+    try { r = await api('/pre-cadastro', { method: 'POST', body }); }
+    catch (e) { return toast(e.message); }
+    liberar();
+    CACHE.pacientes = null;
+    mostrarLinkPreCadastro(r, nome, body.telefone);
+  };
+}
+
+/* Ele fechou, pagou e não preencheu. Isto reaproveita o link que já existe
+   e abre o WhatsApp com a cobrança pronta. */
+async function reenviarFicha(pacienteId) {
+  try {
+    const r = await api(`/pacientes/${pacienteId}/anamnese-link`, { method: 'POST', body: {} });
+    const p = (await api('/pacientes/' + pacienteId)).paciente;
+    mostrarLinkPreCadastro({ ...r, paciente_id: pacienteId, cod: p.cod, reenvio: true },
+      p.nome, p.telefone);
+  } catch (e) { toast(e.message); }
+}
+
+function mostrarLinkPreCadastro(r, nome, telefone) {
+  const primeiro = String(nome || '').trim().split(/\s+/)[0];
+  modal(r.reenvio ? 'Mandar o formulário de novo' : 'Pronto — agora mande o formulário', `
+    <p style="font-size:13.5px;color:var(--txt-2);margin:0 0 14px">
+      ${r.reenvio
+        ? `<b>${esc(nome)}</b>${r.cod ? ` (COD ${esc(r.cod)})` : ''} ainda não respondeu.
+           Este é o mesmo link de antes — continua valendo.`
+        : `<b>${esc(nome)}</b> entrou como paciente ativo${r.cod ? ` (COD ${esc(r.cod)})` : ''},
+           com o contrato e as parcelas já criados. Falta só a ficha dele.`}</p>
+    <label>Link do formulário</label>
+    <input id="pcLink" readonly onclick="this.select()" value="${esc(r.link)}"
+      style="font-family:ui-monospace,monospace;font-size:12.5px">
+    <p style="font-size:12.5px;color:var(--txt-2);margin:8px 0 0">
+      É só deste paciente e vale até ser respondido. O que ele responder cai
+      direto nesta ficha — e o plano não aparece lá, fica só com você.</p>
+    <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+      <button class="btn ghost mini" onclick="navigator.clipboard.writeText($('#pcLink').value);toast('Link copiado')">Copiar</button>
+      <a class="btn ghost mini" href="${esc(r.link)}" target="_blank" rel="noopener" style="text-decoration:none">Abrir</a>
+      <button class="btn zap mini" id="pcZap">Mandar no WhatsApp</button>
+    </div>`, `
+    <button class="btn ghost" onclick="fecharModal(true);if(TELA==='home')telaHome();else if(TELA==='pacientes')carregarPacientes(true)">Fechar</button>
+    <button class="btn ouro" onclick="fecharModal(true);abrirPaciente(${r.paciente_id})">Abrir a ficha</button>`);
+  $('#pcZap').onclick = () => zap(telefone,
+    `Oi ${primeiro}! Que bom ter você comigo. Preenche essa ficha pra mim que é por ela que eu monto o seu plano: ${r.link}`);
+}
+
+/* ---------- detalhe de um card ----------
+   O card dá o total; o Luca precisa saber de quem é. Clicar abre a lista
+   das pessoas por trás do número, com atalho para a ficha e para cobrar. */
+const verCard = (card, extra = '') =>
+  `class="kpi clicavel" tabindex="0" role="button" title="Ver quem compõe este número"
+   onclick="verDetalhe('${card}'${extra})" onkeydown="if(event.key==='Enter'||event.key===' ')
+   {event.preventDefault();verDetalhe('${card}'${extra})}"`.replace(/\s+/g, ' ');
+
+async function verDetalhe(card, de, ate) {
+  const q = ['card=' + encodeURIComponent(card)];
+  if (de) q.push('de=' + de);
+  if (ate) q.push('ate=' + ate);
+  let d;
+  try { d = await api('/detalhe?' + q.join('&')); } catch (e) { return toast(e.message); }
+  const l = d.linhas || [];
+
+  const soma = l.reduce((t, x) => t + Number(x.valor || 0), 0);
+  const mesmaMoeda = [...new Set(l.map((x) => x.moeda).filter(Boolean))];
+  const rodape = card === 'ativos' ? `${l.length} paciente${l.length === 1 ? '' : 's'}`
+    : `${l.length} linha${l.length === 1 ? '' : 's'}` +
+      (mesmaMoeda.length === 1 ? ` · ${money(soma, mesmaMoeda[0])}` : '');
+
+  const linha = (x) => {
+    const quando = x.quando ? dataBR(x.quando) : '';
+    const det = [x.detalhe && ROTULO_ETAPA[x.detalhe] ? ROTULO_ETAPA[x.detalhe] : x.detalhe,
+      x.qtd > 1 ? x.qtd + ' pagamentos' : '',
+      x.moedas && x.moedas !== 'BRL' ? 'em ' + x.moedas.split(',').join(' e ') : '']
+      .filter(Boolean).join(' · ');
+    return `
+      <tr>
+        <td>${nomeCompleto(x)}${det ? `<br><small style="color:var(--txt-2)">${esc(det)}</small>` : ''}</td>
+        <td style="white-space:nowrap">${quando}</td>
+        <td style="text-align:right;white-space:nowrap">
+          ${x.valor != null && x.valor !== '' ? `<b class="sigiloso">${money(x.valor, x.moeda || 'BRL')}</b>` : '—'}</td>
+        <td style="text-align:right;white-space:nowrap">
+          <button class="btn mini ghost" onclick="fecharModal(true);abrirPaciente(${x.paciente_id})">Ficha</button>
+          ${x.parcela_id ? `<button class="btn mini" onclick="fecharModal(true);abrirPagamento(${x.paciente_id},${x.parcela_id},${x.valor},'${x.moeda}')">Receber</button>` : ''}
+        </td>
+      </tr>`;
+  };
+
+  modal(d.titulo || 'Detalhe', `
+    ${d.nota ? `<p class="dica">${esc(d.nota)}</p>` : ''}
+    ${!l.length ? '<p class="vazio">Nada aqui no momento.</p>' : `
+      <div class="det-lista"><table><thead><tr>
+        <th>Paciente</th><th>Data</th><th style="text-align:right">Valor</th><th></th>
+      </tr></thead><tbody>${l.map(linha).join('')}</tbody></table></div>
+      <p class="dica" style="margin:10px 0 0">${rodape}</p>`}`, `
+    <button class="btn ghost" onclick="fecharModal()">Fechar</button>`);
 }
 
 /* ==========================================================
@@ -632,6 +870,18 @@ async function relatorioFunil() {
    PACIENTES — separados pelo que exige ação, não por uma lista só
    ========================================================== */
 let FILTRO = { q: '', objetivo: '', pais: '', plano: '', entrada: '' };
+/* Ordem da lista. Cada opção é um jeito de procurar: pelo COD ele acha quem
+   entrou primeiro, pelo nome ele acha quem lembra de cabeça, pela entrada ele
+   vê a safra do mês. */
+let ORDEM = 'nome-asc';
+const ORDENS = [
+  ['nome-asc', 'Nome (A → Z)'],
+  ['nome-desc', 'Nome (Z → A)'],
+  ['entrada-desc', 'Entrada (mais recente)'],
+  ['entrada-asc', 'Entrada (mais antiga)'],
+  ['cod-asc', 'COD (menor)'],
+  ['cod-desc', 'COD (maior)'],
+];
 
 /* Mês de entrada = início do primeiro contrato; quem nunca fechou conta
    pela data de cadastro. "Recentes" são os últimos 60 dias. */
@@ -731,7 +981,10 @@ async function telaPacientes() {
         ${mesesDeEntrada(CACHE.pacientes || []).map((m) =>
           `<option value="${m.mes}"${FILTRO.entrada === m.mes ? ' selected' : ''}>${mesLegivel(m.mes)} (${m.qtd})</option>`).join('')}
       </select></div>
-      <button class="btn ghost" onclick="FILTRO={q:'',objetivo:'',pais:'',plano:'',entrada:''};telaPacientes()">Limpar</button>
+      <div><label>Ordenar por</label><select id="fOrdem">
+        ${ORDENS.map(([k, r]) => `<option value="${k}"${ORDEM === k ? ' selected' : ''}>${r}</option>`).join('')}
+      </select></div>
+      <button class="btn ghost" onclick="FILTRO={q:'',objetivo:'',pais:'',plano:'',entrada:''};ORDEM='nome-asc';telaPacientes()">Limpar</button>
     </div>
     <div id="semDono"></div>
     <div class="card" style="padding:0;overflow:auto"><div id="tabelaPac"></div></div>`;
@@ -742,6 +995,7 @@ async function telaPacientes() {
   $('#fPais').onchange = () => { FILTRO.pais = $('#fPais').value; pintarPacientes(); };
   $('#fPlano').onchange = () => { FILTRO.plano = $('#fPlano').value; pintarPacientes(); };
   $('#fEntrada').onchange = () => { FILTRO.entrada = $('#fEntrada').value; pintarPacientes(); };
+  $('#fOrdem').onchange = () => { ORDEM = $('#fOrdem').value; pintarPacientes(); };
   carregarPacientes();
 }
 
@@ -831,6 +1085,35 @@ async function carregarPacientes(forcar) {
   pintarPacientes();
 }
 
+/* O COD é texto no banco (tem "100", "100-US", "A12"): comparar como texto
+   põe o 1000 antes do 2. Separa o número do resto e compara cada parte. */
+function compCod(a, b) {
+  const parte = (v) => {
+    const m = String(v == null ? '' : v).trim().match(/^(\d*)(.*)$/);
+    return [m[1] === '' ? Infinity : Number(m[1]), m[2].toLowerCase()];
+  };
+  const [na, ra] = parte(a), [nb, rb] = parte(b);
+  return na - nb || ra.localeCompare(rb, 'pt-BR');
+}
+
+function ordenarPacientes(lista) {
+  const [campo, dir] = ORDEM.split('-');
+  const sinal = dir === 'desc' ? -1 : 1;
+  const porNome = (a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR',
+    { sensitivity: 'base' });
+  return [...lista].sort((a, b) => {
+    if (campo === 'cod') return sinal * compCod(a.cod, b.cod) || porNome(a, b);
+    if (campo === 'entrada') {
+      // quem não tem data vai para o fim nos dois sentidos: é falta de dado,
+      // não uma data muito antiga nem muito nova
+      const ea = a.entrada || '', eb = b.entrada || '';
+      if (!ea !== !eb) return ea ? -1 : 1;
+      return sinal * String(ea).localeCompare(String(eb)) || porNome(a, b);
+    }
+    return sinal * porNome(a, b);
+  });
+}
+
 function pintarPacientes() {
   if (!$('#tabelaPac')) return;
   const base = CACHE.pacientes || [];
@@ -865,7 +1148,7 @@ function pintarPacientes() {
       <small style="color:var(--txt-2);display:block;font-size:11.5px;line-height:1.35">${ajuda}</small>
     </button>`).join('');
 
-  const lista = buscando ? filtrados : seg[SEGMENTO];
+  const lista = ordenarPacientes(buscando ? filtrados : seg[SEGMENTO]);
   const rotulo = SEGMENTOS.find(([k]) => k === SEGMENTO);
   const porFiltroEntrada = f.entrada === 'recentes' ? 'entraram nos últimos 60 dias'
     : f.entrada ? `entraram em ${mesLegivel(f.entrada)}` : '';
@@ -1380,55 +1663,114 @@ const REFEICOES_PADRAO = ['Café da manhã', 'Lanche (manhã)', 'Almoço',
   'Lanche (tarde)', 'Jantar', 'Ceia'];
 
 // fichas antigas guardavam 6 colunas fixas; viram lista sem perder nada
-function refeicoesDaFicha(c) {
+/* A ficha do dia é uma lista só: treino e refeições, na ordem em que ele
+   arrastou, cada um com hora. Fichas antigas não têm essa lista — então o
+   treino da coluna e as refeições fixas viram itens aqui. */
+function blocosDaFicha(c) {
+  let itens = null;
   if (c && c.refeicoes) {
     try {
       const l = JSON.parse(c.refeicoes);
-      if (Array.isArray(l) && l.length) return l;
+      if (Array.isArray(l) && l.length) itens = l.map((r) => ({ tipo: 'refeicao', ...r }));
     } catch { /* json torto: cai para as colunas antigas */ }
   }
-  const velhas = [['Café da manhã', 'cafe'], ['Lanche (manhã)', 'lanche_manha'],
-    ['Almoço', 'almoco'], ['Lanche (tarde)', 'lanche_tarde'],
-    ['Jantar', 'jantar'], ['Ceia', 'ceia']];
-  if (c && velhas.some(([, k]) => c[k])) {
-    return velhas.map(([nome, k]) => ({ nome, hora: '', texto: c[k] || '' }));
+  if (!itens) {
+    const velhas = [['Café da manhã', 'cafe'], ['Lanche (manhã)', 'lanche_manha'],
+      ['Almoço', 'almoco'], ['Lanche (tarde)', 'lanche_tarde'],
+      ['Jantar', 'jantar'], ['Ceia', 'ceia']];
+    itens = (c && velhas.some(([, k]) => c[k]))
+      ? velhas.map(([nome, k]) => ({ tipo: 'refeicao', nome, hora: '', texto: c[k] || '' }))
+      : REFEICOES_PADRAO.map((nome) => ({ tipo: 'refeicao', nome, hora: '', texto: '' }));
   }
-  return REFEICOES_PADRAO.map((nome) => ({ nome, hora: '', texto: '' }));
+  if (!itens.some((r) => r.tipo === 'treino')) {
+    itens.unshift({ tipo: 'treino', nome: 'Treino', hora: '', texto: (c && c.treino) || '' });
+  }
+  return itens;
 }
 
 let REF_ATUAIS = [];
 
 function linhaRefeicao(r, i) {
+  const treino = r.tipo === 'treino';
   return `
-    <div class="refeicao" data-ref="${i}">
+    <div class="refeicao${treino ? ' e-treino' : ''}" data-ord data-tipo="${treino ? 'treino' : 'refeicao'}" data-ref="${i}">
       <div class="rot">
-        <input class="refNome" value="${esc(r.nome)}" placeholder="nome da refeição">
-        <input class="refHora" type="time" value="${esc(r.hora || '')}">
-        <button type="button" class="btn mini ghost refTirar" title="Remover esta refeição">×</button>
+        <span class="ord-pega" title="Arraste para mudar a ordem">⋮⋮</span>
+        <input class="refNome" value="${esc(r.nome)}" placeholder="${treino ? 'treino' : 'nome da refeição'}">
+        <input class="refHora" type="time" value="${esc(r.hora || '')}" title="Horário">
+        <button type="button" class="btn mini ghost refTirar" title="Remover">×</button>
       </div>
       <textarea class="refTexto">${esc(r.texto || '')}</textarea>
     </div>`;
 }
 
 function pintarRefeicoes() {
-  $('#refLista').innerHTML = REF_ATUAIS.map(linhaRefeicao).join('');
+  const lista = $('#refLista');
+  lista.innerHTML = REF_ATUAIS.map(linhaRefeicao).join('');
   $$('#refLista .refTirar').forEach((b, i) => {
     b.onclick = () => { lerRefeicoes(); REF_ATUAIS.splice(i, 1); pintarRefeicoes(); };
   });
+  listaOrdenavel(lista, lerRefeicoes);
 }
+
 function lerRefeicoes() {
+  // lê a ordem do DOM, que é o que ele acabou de arrastar
   REF_ATUAIS = $$('#refLista .refeicao').map((el) => ({
+    tipo: el.dataset.tipo === 'treino' ? 'treino' : 'refeicao',
     nome: $('.refNome', el).value.trim(),
     hora: $('.refHora', el).value,
     texto: $('.refTexto', el).value,
   }));
 }
-function adicionarRefeicao() {
+
+function adicionarRefeicao(tipo) {
   lerRefeicoes();
-  REF_ATUAIS.push({ nome: '', hora: '', texto: '' });
+  REF_ATUAIS.push({ tipo: tipo === 'treino' ? 'treino' : 'refeicao',
+    nome: tipo === 'treino' ? 'Treino' : '', hora: '', texto: '' });
   pintarRefeicoes();
-  const ult = $$('#refLista .refNome').pop();
-  if (ult) ult.focus();
+  const alvo = tipo === 'treino' ? $$('#refLista .refTexto').pop() : $$('#refLista .refNome').pop();
+  if (alvo) alvo.focus();
+}
+
+/* Arrastar pela pega para reordenar. Move o elemento de verdade em vez de
+   repintar a lista — repintar perderia o que ele digitou e o cursor. */
+function listaOrdenavel(container, aoTerminar) {
+  let item = null, ultimoY = 0;
+  $$('.ord-pega', container).forEach((pega) => {
+    pega.style.touchAction = 'none';
+    pega.onpointerdown = (ev) => {
+      item = pega.closest('[data-ord]');
+      if (!item) return;
+      ev.preventDefault();
+      pega.setPointerCapture(ev.pointerId);
+      item.classList.add('ord-mov');
+      container.classList.add('ord-ativo');
+      ultimoY = ev.clientY;
+    };
+    /* Troca assim que encosta no vizinho, pelo sentido em que ele está indo.
+       Esperar passar da metade do vizinho parecia travado: aqui cada campo tem
+       cabeçalho e caixa de texto, então "metade" fica a uns 200px de distância. */
+    pega.onpointermove = (ev) => {
+      if (!item) return;
+      const descendo = ev.clientY > ultimoY;
+      if (Math.abs(ev.clientY - ultimoY) < 2) return;   // tremida de mão não conta
+      ultimoY = ev.clientY;
+      const sob = document.elementFromPoint(ev.clientX, ev.clientY);
+      const alvo = sob && sob.closest ? sob.closest('[data-ord]') : null;
+      if (!alvo || alvo === item || alvo.parentNode !== container) return;
+      container.insertBefore(item, descendo ? alvo.nextSibling : alvo);
+    };
+    const soltar = (ev) => {
+      if (!item) return;
+      item.classList.remove('ord-mov');
+      container.classList.remove('ord-ativo');
+      try { pega.releasePointerCapture(ev.pointerId); } catch { /* já soltou */ }
+      item = null;
+      aoTerminar && aoTerminar();
+    };
+    pega.onpointerup = soltar;
+    pega.onpointercancel = soltar;
+  });
 }
 
 async function abrirConsulta(pacienteId, consultaId) {
@@ -1438,7 +1780,7 @@ async function abrirConsulta(pacienteId, consultaId) {
   const p = d.paciente;
   const c = consultaId ? d.consultas.find((x) => x.id === consultaId) || {} : {};
   const anterior = d.consultas.filter((x) => x.peso_kg && x.id !== consultaId)[0];
-  REF_ATUAIS = refeicoesDaFicha(consultaId ? c : null);
+  REF_ATUAIS = blocosDaFicha(consultaId ? c : null);
 
   const dataFicha = c.data || hojeISO();
   const objetivoAtual = c.objetivo || p.objetivo || '';
@@ -1461,6 +1803,11 @@ async function abrirConsulta(pacienteId, consultaId) {
       <div class="grid g2" style="margin:12px 0">
         ${campoPeso('cKg', 'cLbs', c.peso_kg ?? null)}
       </div>
+      <div class="grid g2" style="margin:0 0 4px">
+        ${campoAltura('cAltCm', 'cAltPes', 'cAltPol', p.altura_cm ?? null)}
+      </div>
+      <p style="margin:0 0 12px;font-size:12px;color:var(--txt-2)">
+        A altura vem do cadastro. Corrigindo aqui, o cadastro é corrigido junto ao salvar.</p>
       ${anterior ? `<p style="margin:-4px 0 12px;font-size:13px;color:var(--txt-2)">
         Última medição: <b>${anterior.peso_kg} kg</b> em ${dataBR(anterior.data)}
         <span id="cDelta"></span></p>` : ''}
@@ -1485,14 +1832,9 @@ async function abrirConsulta(pacienteId, consultaId) {
         <div class="obs"><span id="cTmbNota"></span></div>
       </div>
 
-      <div class="refeicao" style="margin-top:14px">
-        <div class="rot"><b>Treino</b></div>
-        <textarea id="cTreino">${esc(c.treino || '')}</textarea>
-      </div>
-
-      <div id="refLista"></div>
-      <button type="button" class="btn ghost mini" style="margin-top:4px" onclick="adicionarRefeicao()">
-        + Adicionar refeição</button>
+      <div id="refLista" style="margin-top:14px"></div>
+      <p style="margin:6px 0 0;font-size:12px;color:var(--txt-2)">
+        Arraste pelo ⋮⋮ para mudar a ordem do dia.</p>
 
       <div style="padding-top:14px"><label>Observações</label>
         <textarea id="cObs" style="min-height:80px">${esc(c.observacoes || '')}</textarea></div>
@@ -1500,6 +1842,8 @@ async function abrirConsulta(pacienteId, consultaId) {
 
   modal(consultaId ? 'Ficha de consulta' : 'Nova ficha de consulta', corpo, `
     ${consultaId ? `<button class="btn perigo" onclick="excluirConsulta(${consultaId},${pacienteId})">Excluir</button>` : ''}
+    <button class="btn ghost" onclick="adicionarRefeicao('treino')">+ Treino</button>
+    <button class="btn ghost" onclick="adicionarRefeicao()">+ Refeição</button>
     <button class="btn ghost" onclick="calculadoraDaFicha(${pacienteId})">Calculadora</button>
     <button class="btn ghost" onclick="window.print()">Imprimir</button>
     <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
@@ -1524,7 +1868,8 @@ async function abrirConsulta(pacienteId, consultaId) {
     }
     // idade na DATA DA FICHA: o metabolismo muda sozinho no aniversário
     const idade = idadePor(p.nascimento, $('#cData').value || hojeISO());
-    const tmb = tmbHarrisBenedict(p.sexo || 'F', Number(kg.value), Number(p.altura_cm), idade);
+    const alturaAgora = Number($('#cAltCm').value) || 0;
+    const tmb = tmbHarrisBenedict(p.sexo || 'F', Number(kg.value), alturaAgora, idade);
     const fator = Number($('#cFator').value) || 0;
     const get = tmb != null && fator ? tmb * fator : null;
     ULTIMO = { tmb, get, fator };
@@ -1535,19 +1880,21 @@ async function abrirConsulta(pacienteId, consultaId) {
     // o que falta pode estar no cadastro ou aqui na ficha: o aviso diz onde
     const noCadastro = [];
     if (!p.sexo) noCadastro.push('sexo');
-    if (!p.altura_cm) noCadastro.push('altura');
     if (!idade) noCadastro.push('data de nascimento');
+    const semAltura = !alturaAgora;
     const semPeso = !Number(kg.value);
     $('#cTmbNota').innerHTML = noCadastro.length
       ? `Falta <b>${noCadastro.join(', ')}</b> no cadastro do paciente.
          <a href="#" onclick="event.preventDefault();if(fecharModal())formPaciente(${p.id})">Completar agora</a>`
+      : semAltura ? 'Preencha a altura acima e a TMB aparece aqui.'
       : semPeso ? 'Preencha o peso acima e a TMB aparece aqui.'
       : `${idade} anos na data da ficha · Harris-Benedict × ${fator}` +
         (anterior && anterior.tmb ? ` · na ficha anterior era ${fmtKcal(kcal(anterior.tmb))}` : '');
-    $('#cBlocoTmb').classList.toggle('incompleto', noCadastro.length > 0 || semPeso);
+    $('#cBlocoTmb').classList.toggle('incompleto', noCadastro.length > 0 || semPeso || semAltura);
   }
 
   ligarPeso('cKg', 'cLbs', recalcular);
+  ligarAltura('cAltCm', 'cAltPes', 'cAltPol', recalcular);
   $('#cData').onchange = recalcular;
   $('#cFator').onchange = recalcular;
   recalcular();
@@ -1557,7 +1904,8 @@ async function abrirConsulta(pacienteId, consultaId) {
     const body = {
       paciente_id: pacienteId, data: $('#cData').value || hojeISO(),
       peso_kg: kg.value, peso_lbs: lbs.value,
-      treino: $('#cTreino').value, observacoes: $('#cObs').value,
+      altura_cm: $('#cAltCm').value || null,
+      observacoes: $('#cObs').value,
       refeicoes: REF_ATUAIS.filter((r) => r.nome),
       objetivo: $('#cObjetivo').value || null,
       tmb: ULTIMO.tmb ? kcal(ULTIMO.tmb) : null,
@@ -1569,6 +1917,7 @@ async function abrirConsulta(pacienteId, consultaId) {
       else await api('/consultas', { method: 'POST', body });
       liberar();
       fecharModal(true); toast('Ficha salva');
+      CACHE.pacientes = null;   // a altura pode ter mudado o cadastro
       if (TELA === 'pacientes') carregarPacientes(true); else if (TELA === 'home') telaHome();
     } catch (e) { toast(e.message); }
   };
@@ -1761,6 +2110,106 @@ async function telaAgenda() {
     <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px">${cels.join('')}</div>`;
 }
 
+/* ---------- escolher paciente digitando ----------
+   O <select> do navegador só procura pelo começo do texto, que aqui é o COD:
+   digitar "mari" não achava ninguém. Isto procura por COD, nome e apelido,
+   em qualquer pedaço, e sem acento atrapalhar. */
+const semAcento = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+function rotuloPaciente(p) {
+  return (p.cod ? p.cod + ' · ' : '') + p.nome + (p.apelido ? ' (' + p.apelido + ')' : '');
+}
+
+function buscaPaciente(base, selecionadoId, opt = {}) {
+  const lista = CACHE.pacientes || [];
+  const sel = lista.find((p) => String(p.id) === String(selecionadoId));
+  return `
+    <div class="bp" id="${base}Caixa">
+      <input id="${base}Busca" autocomplete="off" spellcheck="false"
+             placeholder="${esc(opt.placeholder || 'COD, nome ou apelido')}"
+             value="${esc(sel ? rotuloPaciente(sel) : '')}">
+      <input type="hidden" id="${base}" value="${sel ? sel.id : ''}">
+      <button type="button" class="bp-x${sel ? '' : ' hide'}" id="${base}Limpar"
+              title="Tirar o paciente">×</button>
+      <div class="bp-lista hide" id="${base}Lista"></div>
+    </div>`;
+}
+
+function ligarBuscaPaciente(base, aoEscolher) {
+  const campo = $('#' + base + 'Busca'), oculto = $('#' + base),
+    caixa = $('#' + base + 'Lista'), limpar = $('#' + base + 'Limpar');
+  if (!campo) return;
+  let marcado = -1, vistos = [];
+
+  const fechar = () => { caixa.classList.add('hide'); marcado = -1; };
+  const escolher = (p) => {
+    oculto.value = p ? p.id : '';
+    campo.value = p ? rotuloPaciente(p) : '';
+    limpar.classList.toggle('hide', !p);
+    fechar();
+    aoEscolher && aoEscolher(p);
+  };
+
+  const procurar = (txt) => {
+    const t = semAcento(txt).trim();
+    const todos = CACHE.pacientes || [];
+    if (!t) return todos.slice(0, 40);
+    // o COD bate exato primeiro: "100" tem que trazer o 100 antes do 1001
+    const pontos = (p) => {
+      const cod = String(p.cod || '');
+      if (semAcento(cod) === t) return 0;
+      if (semAcento(cod).startsWith(t)) return 1;
+      if (semAcento(p.nome).startsWith(t)) return 2;
+      if (semAcento(p.apelido).startsWith(t)) return 3;
+      return 4;
+    };
+    return todos
+      .filter((p) => semAcento(rotuloPaciente(p)).includes(t))
+      .sort((a, b) => pontos(a) - pontos(b) || String(a.nome).localeCompare(String(b.nome)))
+      .slice(0, 40);
+  };
+
+  const pintar = () => {
+    // com alguém já escolhido, o campo mostra o rótulo inteiro: filtrar por
+    // ele traria só essa pessoa, então a lista abre inteira para ele trocar
+    vistos = procurar(oculto.value ? '' : campo.value);
+    if (!vistos.length) {
+      caixa.innerHTML = '<div class="bp-vazio">Ninguém com esse COD, nome ou apelido.</div>';
+    } else {
+      caixa.innerHTML = vistos.map((p, i) => `
+        <div class="bp-item${i === marcado ? ' on' : ''}" data-i="${i}">
+          ${p.cod ? `<span class="cod">${esc(p.cod)}</span> ` : ''}<b>${esc(p.nome)}</b>
+          ${p.apelido ? `<span class="apelido">“${esc(p.apelido)}”</span>` : ''}
+        </div>`).join('');
+      $$('.bp-item', caixa).forEach((el) => {
+        el.onmousedown = (ev) => { ev.preventDefault(); escolher(vistos[Number(el.dataset.i)]); };
+      });
+    }
+    caixa.classList.remove('hide');
+  };
+
+  campo.oninput = () => { oculto.value = ''; limpar.classList.add('hide'); marcado = -1; pintar(); };
+  campo.onfocus = () => { campo.select(); pintar(); };
+  campo.onblur = () => setTimeout(fechar, 120);
+  campo.onkeydown = (ev) => {
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      if (caixa.classList.contains('hide')) return pintar();
+      marcado = Math.max(0, Math.min(vistos.length - 1, marcado + (ev.key === 'ArrowDown' ? 1 : -1)));
+      pintar();
+      const alvo = $('.bp-item.on', caixa);
+      if (alvo) alvo.scrollIntoView({ block: 'nearest' });
+    } else if (ev.key === 'Enter') {
+      if (!caixa.classList.contains('hide') && vistos[marcado]) {
+        ev.preventDefault(); escolher(vistos[marcado]);
+      }
+    } else if (ev.key === 'Escape') {
+      if (!caixa.classList.contains('hide')) { ev.stopPropagation(); fechar(); }
+    }
+  };
+  limpar.onclick = () => { escolher(null); campo.focus(); };
+}
+
 async function abrirCompromisso(id, dia) {
   if (!CACHE.pacientes) CACHE.pacientes = (await api('/pacientes')).pacientes;
   const pacientes = CACHE.pacientes;
@@ -1775,10 +2224,10 @@ async function abrirCompromisso(id, dia) {
       <div><label>Tipo</label><select id="mTipo">
         ${['consulta', 'followup', 'cobranca', 'pessoal'].map((t) => `<option value="${t}"${c.tipo === t ? ' selected' : ''}>${{ consulta: 'Consulta', followup: 'Follow-up', cobranca: 'Cobrança', pessoal: 'Pessoal' }[t]}</option>`).join('')}
       </select></div>
-      <div><label>Paciente</label><select id="mPac">
-        <option value="">— sem paciente —</option>
-        ${pacientes.map((p) => `<option value="${p.id}"${c.paciente_id === p.id ? ' selected' : ''}>${p.cod ? p.cod + ' · ' : ''}${esc(p.nome)}${p.apelido ? ' (' + esc(p.apelido) + ')' : ''}</option>`).join('')}
-      </select></div>
+      <div><label>Paciente</label>
+        ${buscaPaciente('mPac', c.paciente_id)}
+        <small style="display:block;font-size:12px;color:var(--txt-2);margin-top:4px">
+          Digite o COD, o nome ou o apelido.</small></div>
       <div><label>Data e hora</label><input id="mIni" type="datetime-local" value="${esc((c.inicio || '').slice(0, 16))}"></div>
       <div><label>Local / link</label><input id="mLocal" value="${esc(c.local || '')}"></div>
       <div><label>Situação</label><select id="mSt">
@@ -1788,8 +2237,20 @@ async function abrirCompromisso(id, dia) {
 
   modal(id ? 'Compromisso' : 'Novo compromisso', corpo, `
     ${id ? `<button class="btn perigo" onclick="excluirCompromisso(${id})">Excluir</button>` : ''}
+    <button class="btn ghost hide" id="compFicha">Abrir ficha do paciente</button>
     <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
     <button class="btn ouro" id="salvarComp">Salvar</button>`);
+
+  // o atalho da ficha segue quem está escolhido agora, não quem estava ao abrir
+  const ajustarFicha = (pid) => {
+    const b = $('#compFicha');
+    if (!b) return;
+    b.classList.toggle('hide', !pid);
+    b.onclick = () => { if (fecharModal()) abrirPaciente(Number(pid)); };
+  };
+  ligarBuscaPaciente('mPac', (p) => ajustarFicha(p && p.id));
+  ajustarFicha(c.paciente_id);
+  const liberarComp = travarSeMexer(AVISO_SAIR('o compromisso'));
 
   $('#salvarComp').onclick = async () => {
     const body = { titulo: $('#mTit').value.trim(), tipo: $('#mTipo').value,
@@ -1799,7 +2260,8 @@ async function abrirCompromisso(id, dia) {
     try {
       if (id) await api('/compromissos/' + id, { method: 'PUT', body });
       else await api('/compromissos', { method: 'POST', body });
-      fecharModal(); toast('Compromisso salvo');
+      liberarComp();
+      fecharModal(true); toast('Compromisso salvo');
       TELA === 'agenda' ? telaAgenda() : telaHome();
     } catch (e) { toast(e.message); }
   };
@@ -1807,7 +2269,7 @@ async function abrirCompromisso(id, dia) {
 async function excluirCompromisso(id) {
   if (!confirm('Excluir este compromisso?')) return;
   await api('/compromissos/' + id, { method: 'DELETE' });
-  fecharModal(); toast('Excluído'); telaAgenda();
+  fecharModal(true); toast('Excluído'); telaAgenda();
 }
 
 /* ==========================================================
@@ -2173,16 +2635,16 @@ async function telaFinanceiro() {
     </div>
 
     <div class="grid g4" style="margin-bottom:16px">
-      <div class="kpi"><span>Recebido no período</span>
-        <b style="font-size:27px">${money(total, 'BRL')}</b>
-        <small style="color:${varia == null ? 'var(--txt-2)' : varia >= 0 ? 'var(--ok)' : 'var(--erro)'}">
+      <div ${verCard('recebido', `,'${f.de}','${f.ate}'`)}><span>Recebido no período</span>
+        <b style="font-size:27px" class="sigiloso">${money(total, 'BRL')}</b>
+        <small class="sigiloso" style="color:${varia == null ? 'var(--txt-2)' : varia >= 0 ? 'var(--ok)' : 'var(--erro)'}">
           ${varia == null ? 'sem base para comparar' : `${varia >= 0 ? '+' : ''}${varia}% vs período anterior`}</small></div>
-      <div class="kpi"><span>Entradas</span><b>${d.total.qtd || 0}</b>
-        <small style="color:var(--txt-2)">${d.total.pessoas || 0} pessoas · média ${money(ticket, 'BRL')}</small></div>
-      <div class="kpi"><span>A receber</span>
-        <b style="font-size:17px;line-height:1.4">${d.a_receber.map((r) => money(r.total, r.moeda)).join('<br>') || '—'}</b>
+      <div ${verCard('entradas', `,'${f.de}','${f.ate}'`)}><span>Entradas</span><b>${d.total.qtd || 0}</b>
+        <small style="color:var(--txt-2)">${d.total.pessoas || 0} pessoas · média <span class="sigiloso">${money(ticket, 'BRL')}</span></small></div>
+      <div ${verCard('a_receber')}><span>A receber</span>
+        <b style="font-size:17px;line-height:1.4" class="sigiloso">${d.a_receber.map((r) => money(r.total, r.moeda)).join('<br>') || '—'}</b>
         <small style="color:var(--txt-2)">${d.a_receber.reduce((s, r) => s + r.qtd, 0)} parcelas em aberto</small></div>
-      <div class="kpi"><span>Vencido</span>
+      <div ${verCard('vencido')}><span>Vencido</span>
         <b style="color:${d.atrasado.qtd ? 'var(--erro)' : 'var(--txt)'}">${d.atrasado.qtd || 0}</b>
         <small style="color:var(--txt-2)">parcelas passaram da data</small></div>
     </div>
@@ -2191,33 +2653,33 @@ async function telaFinanceiro() {
       <h3>Entradas ${d.granularidade === 'dia' ? 'por dia' : 'por mês'}</h3>
       <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 10px">
         Em reais, somando todas as moedas. Passe o mouse para ver cada barra.</p>
-      ${colunas(serie)}
+      <div class="sigiloso">${colunas(serie)}</div>
     </div>
 
     <div class="grid g2" style="margin-bottom:14px">
       <div class="card"><h3>Por moeda</h3>
         <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 10px">No período escolhido.</p>
-        ${!d.por_moeda.length ? '<p class="vazio">Sem entradas.</p>' :
+        <div class="sigiloso">${!d.por_moeda.length ? '<p class="vazio">Sem entradas.</p>' :
           d.por_moeda.map((m) => `<div class="linha-aviso">
             <span class="tag">${m.moeda}</span>
             <div class="txt"><b>${money(m.total, m.moeda)}</b>
               <small>${m.qtd} entrada${m.qtd === 1 ? '' : 's'}${m.moeda !== 'BRL' ? ' · ' + money(m.total_brl, 'BRL') + ' convertidos' : ''}</small></div>
-          </div>`).join('')}
+          </div>`).join('')}</div>
       </div>
       <div class="card"><h3>Por forma de pagamento</h3>
         <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 10px">Em reais convertidos.</p>
-        ${barras(d.por_forma.map((x) => ({ rotulo: x.forma, valor: Number(x.total_brl || 0) })))}
+        <div class="sigiloso">${barras(d.por_forma.map((x) => ({ rotulo: x.forma, valor: Number(x.total_brl || 0) })))}</div>
       </div>
     </div>
 
     <div class="grid g2" style="margin-bottom:14px">
       <div class="card"><h3>Por plano</h3>
         <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 10px">O que cada plano trouxe no período.</p>
-        ${barras(d.por_plano.map((x) => ({ rotulo: x.plano, valor: Number(x.total_brl || 0) })))}
+        <div class="sigiloso">${barras(d.por_plano.map((x) => ({ rotulo: x.plano, valor: Number(x.total_brl || 0) })))}</div>
       </div>
       <div class="card"><h3>Por país</h3>
         <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 10px">Onde está o faturamento.</p>
-        ${barras(d.por_pais.map((x) => ({ rotulo: x.pais, valor: Number(x.total_brl || 0) })))}
+        <div class="sigiloso">${barras(d.por_pais.map((x) => ({ rotulo: x.pais, valor: Number(x.total_brl || 0) })))}</div>
       </div>
     </div>
 
@@ -2225,21 +2687,21 @@ async function telaFinanceiro() {
       <h3>Tendência dos últimos ${tend.length} meses</h3>
       <p style="font-size:12.5px;color:var(--txt-2);margin:2px 0 10px">
         Independe do filtro acima — serve para ver o movimento do negócio.</p>
-      ${colunas(tend, { altura: 200 })}
+      <div class="sigiloso">${colunas(tend, { altura: 200 })}</div>
     </div>
 
     <div class="card" style="padding:0;overflow:auto">
       <h3 style="padding:16px 16px 4px">Tabela do período</h3>
       <p style="font-size:12.5px;color:var(--txt-2);margin:0;padding:0 16px 10px">
         Os mesmos números dos gráficos, para conferir.</p>
-      ${!serie.length ? '<p class="vazio">Sem entradas no período.</p>' :
+      <div class="sigiloso">${!serie.length ? '<p class="vazio">Sem entradas no período.</p>' :
         `<table><thead><tr><th>${d.granularidade === 'dia' ? 'Dia' : 'Mês'}</th>
           <th>Entradas</th><th>Total em reais</th></tr></thead><tbody>
         ${d.serie.map((s) => `<tr><td>${d.granularidade === 'dia' ? dataBR(s.rotulo) : s.rotulo.split('-').reverse().join('/')}</td>
           <td>${s.qtd}</td><td><b>${money(s.total_brl, 'BRL')}</b></td></tr>`).join('')}
         </tbody><tfoot><tr style="border-top:2px solid var(--linha)">
           <td><b>Total</b></td><td><b>${d.total.qtd}</b></td><td><b>${money(total, 'BRL')}</b></td>
-        </tr></tfoot></table>`}
+        </tr></tfoot></table>`}</div>
     </div>`;
 }
 
@@ -3406,11 +3868,12 @@ async function telaConversores() {
       </div>
 
       <div class="card" style="grid-column:1/-1">
-        <h3>Moeda</h3>
-        <p style="font-size:13px;color:var(--txt-2);margin:6px 0 12px" id="cvCotacaoNota">Buscando a cotação do dia…</p>
+        <h3>Moeda <button class="btn ghost mini" id="cvAtualizar"
+          style="float:right;margin-top:-2px">Atualizar cotação</button></h3>
+        <p style="font-size:13px;color:var(--txt-2);margin:6px 0 12px" id="cvCotacaoNota">Buscando a cotação de agora…</p>
         <div class="grid g2">
           <div><label>Moeda</label><select id="cvMoeda">
-            ${['USD', 'EUR', 'GBP'].map((m) => `<option value="${m}">${m}</option>`).join('')}</select></div>
+            ${['USD', 'EUR', 'GBP', 'CAD', 'CHF', 'AUD', 'ARS', 'JPY'].map((m) => `<option value="${m}">${m}</option>`).join('')}</select></div>
           <div><label>Cotação (R$)</label><input id="cvTaxa" type="number" step="0.0001"></div>
           <div><label>Valor em <span id="cvRotEstr">USD</span></label><input id="cvEstr" type="number" step="0.01"></div>
           <div><label>Valor em BRL</label><input id="cvBrl" type="number" step="0.01"></div>
@@ -3490,16 +3953,24 @@ function pintarRelogios(meu) {
   }).join('');
 }
 
+let CV_RELOGIO = null;
+
 async function ligarMoeda() {
   const taxa = $('#cvTaxa'), estr = $('#cvEstr'), brl = $('#cvBrl'), moeda = $('#cvMoeda');
-  const buscar = async () => {
+  const buscar = async (porBotao) => {
     $('#cvRotEstr').textContent = moeda.value;
+    if (porBotao) $('#cvCotacaoNota').textContent = 'Buscando…';
     try {
-      const r = await api(`/cotacao?moeda=${moeda.value}&dia=${hojeISO()}`);
+      const r = await api(`/cotacao?moeda=${moeda.value}&vivo=1`);
       taxa.value = Number(r.taxa || 0).toFixed(4);
-      const emBR = Number(r.taxa || 0).toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
-      $('#cvCotacaoNota').textContent =
-        `Cotação de ${dataBR(r.dia || hojeISO())}: 1 ${moeda.value} = R$ ${emBR}. Dá para corrigir à mão.`;
+      const emBR = Number(r.taxa || 0).toLocaleString('pt-BR',
+        { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+      // dizer de quando é a cotação importa: ele fecha preço em cima disso
+      $('#cvCotacaoNota').innerHTML = r.ao_vivo
+        ? `<b>1 ${moeda.value} = R$ ${emBR}</b> · cotação de agora${r.hora ? `, das ${r.hora}` : ''}.
+           Dá para corrigir à mão.`
+        : `<b>1 ${moeda.value} = R$ ${emBR}</b> · última conhecida, de ${dataBR(r.dia)} —
+           não consegui falar com a fonte agora. Dá para corrigir à mão.`;
     } catch {
       $('#cvCotacaoNota').textContent = 'Não consegui buscar a cotação agora — digite a taxa à mão.';
     }
@@ -3516,7 +3987,13 @@ async function ligarMoeda() {
   estr.oninput = daEstrangeira;
   brl.oninput = daBrl;
   taxa.oninput = daEstrangeira;
-  moeda.onchange = buscar;
+  moeda.onchange = () => buscar();
+  $('#cvAtualizar').onclick = () => buscar(true);
+  // deixar a tela aberta a manhã inteira não pode congelar a cotação
+  clearInterval(CV_RELOGIO);
+  CV_RELOGIO = setInterval(() => {
+    if ($('#cvTaxa')) buscar(); else clearInterval(CV_RELOGIO);
+  }, 300000);
   await buscar();
 }
 
@@ -3785,6 +4262,8 @@ async function apresentarInbody(pacienteId) {
   tela.id = 'inbodyShow';
   tela.className = 'ib-show';
   tela.innerHTML = `
+    <button class="ib-imprimir" onclick="imprimirInbody()"
+            title="Imprimir ou salvar em PDF">Salvar em PDF</button>
     <button class="ib-sair" onclick="fecharApresentacao()" title="Fechar (Esc)">✕</button>
     <div class="ib-pagina">
       <header class="ib-topo">
@@ -3823,6 +4302,15 @@ async function apresentarInbody(pacienteId) {
   document.body.classList.add('apresentando');
   requestAnimationFrame(() => tela.classList.add('entrou'));
   document.addEventListener('keydown', teclaApresentacao);
+}
+
+/* Imprimir é o jeito de virar PDF sem servidor: no diálogo ele escolhe
+   "Salvar como PDF". A folha vai deitada e sem animação, pelo CSS de print. */
+function imprimirInbody() {
+  const t = $('#inbodyShow');
+  if (!t) return;
+  t.classList.add('entrou');     // garante a folha no lugar antes de medir
+  setTimeout(() => window.print(), 80);
 }
 
 function teclaApresentacao(ev) {

@@ -150,12 +150,27 @@ duas bases.
 - Escrever "pago" não baixa nada: só o lançamento de pagamento abate a parcela
 - Moedas aceitas: BRL, USD, GBP, EUR
 
+## Scroll não mexe em data nem hora
+
+Campos de data, hora e número perdem o foco quando a roda do mouse passa
+por cima: antes, rolar a página com o cursor sobre a data trocava o valor
+sem ele perceber. Teclado e setas continuam funcionando normalmente.
+
 ## Cotação
 
 Buscada do câmbio do dia (AwesomeAPI) e guardada por data — um pagamento
 antigo continua valendo pela taxa da época. O campo é **editável**: se o
 Zelle ou a Wise converteram com outra taxa, corrija e o painel bate com o
 extrato.
+
+Na tela de **Conversores**, a moeda puxa a cotação **de agora**, não a do
+fechamento de ontem: é com ela que ele fecha preço na call. A linha de
+cima diz a que horas aquela cotação foi medida, tem botão de atualizar, e
+ela se renova sozinha a cada 5 minutos com a tela aberta. Sem resposta da
+fonte, usa a última conhecida e diz de que dia é — em vez de mostrar um
+número velho como se fosse de hoje. Além de dólar, euro e libra, dá para
+converter dólar canadense, franco suíço, dólar australiano, peso argentino
+e iene.
 
 ## Unidades e fuso
 
@@ -191,6 +206,21 @@ valor congelado. A fórmula é a mesma da planilha (Harris-Benedict), a TMB
 e o gasto total ficam gravados em cada ficha, e a ficha mostra quanto era
 na consulta anterior.
 
+A **altura** fica na própria ficha, em cm e em pés/polegadas. Vem do
+cadastro, e corrigir ali corrige o cadastro ao salvar — é na consulta que
+ele mede. Campo em branco não apaga a altura que já existia.
+
+## O dia do paciente na ficha
+
+Treino e refeições são uma lista só, na ordem do dia. Cada linha tem nome,
+**horário** e texto, e se arrasta pelo ⋮⋮ para cima ou para baixo — dá para
+pôr o treino entre o café e o almoço, ou ter dois treinos no mesmo dia.
+Os botões **+ Treino** e **+ Refeição** ficam fixos no rodapé do modal,
+junto com Calculadora, Imprimir, Cancelar e Salvar.
+
+Por baixo, o treino continua indo também para a coluna `treino` (com o
+horário na frente), que é o que as fichas antigas e a impressão leem.
+
 ## Objetivos
 
 Deixaram de ser uma lista fixa no código. **Configurações → Objetivos**:
@@ -213,6 +243,13 @@ sem rolar. Esc fecha.
 Os textos explicativos, o rodapé de contato e o modelo do aparelho ficam
 em **Configurações → Textos do InBody**. O plano e o modelo podem ser
 trocados por paciente no botão **Cabeçalho**.
+
+## Impressão do InBody
+
+Na apresentação em tela cheia, o botão **Salvar em PDF** abre a impressão
+com a folha deitada em A4, sem a animação e sem os botões — é só escolher
+*Salvar como PDF* no diálogo. Os valores não saem embaçados mesmo com o
+olho ligado.
 
 ## Tarefas
 
@@ -237,6 +274,64 @@ conta pela data de cadastro. Esse filtro atravessa os segmentos — "quem
 entrou em agosto" é uma pergunta sobre a base inteira — e a coluna de
 destaque passa a mostrar a data de entrada.
 
+## Vendeu numa call: o pré-cadastro
+
+O botão **Vendeu! Pré-cadastro**, no topo do Início, é para ser preenchido
+durante a conversa, enquanto o cliente ainda está na linha. Pede o
+essencial — quem é, WhatsApp, cidade — e, principalmente, **o plano e a
+forma de pagamento que acabaram de ser fechados**.
+
+Ao salvar, num clique só:
+
+- o paciente entra como **ativo** (se já era lead, aproveita a ficha, não
+  duplica);
+- o **contrato é criado** com o plano, o valor, a moeda e as parcelas;
+- a negociação que estava aberta no funil **fecha** apontando para esse
+  contrato;
+- sai o **link do formulário**, já preso a esse paciente, com botão de
+  copiar e de mandar no WhatsApp.
+
+Escolher o plano preenche o valor sozinho; escolher Zelle ou PayPal troca
+a moeda para dólar e o valor acompanha. Se o plano não tiver preço na
+moeda escolhida, o campo avisa em vez de ficar em branco. Valor zerado
+pede confirmação — sem valor não nasce cobrança nenhuma.
+
+**O plano não aparece no formulário do paciente.** Quem chega por esse
+link não vê lista de planos nem o nome de nenhum outro: o que foi vendido
+fica com o Luca. O `migrate-08.sql` desliga essa pergunta; se um dia ele
+quiser oferecê-la a lead frio, é só reativar em *Configurações →
+Perguntas*.
+
+No Início há o bloco **Vendeu e falta a ficha**: quem pagou e ainda não
+respondeu o formulário, com o tempo desde o fechamento e o botão de mandar
+o link de novo — é o mesmo link, continua valendo.
+
+## Os números da tela, por pessoa
+
+Os cards de Início e de Financeiro — recebido, a receber, vencido,
+entradas, ativos, fechamento — abrem ao clique e mostram **quem compõe
+aquele número**: nome, data, valor, atalho para a ficha e, quando é
+parcela em aberto, o botão de receber ali mesmo.
+
+## O olho
+
+O botão **Ocultar valores**, no menu da esquerda, embaça faturamento,
+valores e totais da tela inteira. É para o atendimento presencial, quando
+o paciente enxerga o monitor. As contagens continuam à mostra — número de
+parcelas não é faturamento. A escolha fica lembrada no navegador, e na
+impressão os valores saem normais.
+
+## Ordenar e achar paciente
+
+Na tela de Pacientes, o seletor **Ordenar por** troca entre nome (A→Z e
+Z→A), data de entrada e COD, nos dois sentidos. O COD é comparado como
+número: o 7 vem antes do 70, não depois.
+
+Onde se escolhe um paciente — hoje no compromisso da agenda — o campo é de
+digitar, não lista suspensa: procura por **COD, nome ou apelido**, em
+qualquer pedaço da palavra e sem precisar de acento, com as setas e o
+Enter funcionando. COD exato vem primeiro.
+
 ## Atualizar um banco que já existe
 
 No console do D1, na ordem:
@@ -251,6 +346,8 @@ No console do D1, na ordem:
    cidade e fuso do paciente, refeições e TMB na ficha, InBody e o
    endereço do formulário. É o maior: 656 cidades viram fuso horário
 7. `migrate-07.sql` — lista de tarefas (substitui o bloco de notas)
+8. `migrate-08.sql` — tira a escolha de plano do formulário do paciente
+   (um comando só)
 
 Se estiver em dúvida sobre quais já rodaram, o próprio sistema diz: ao
 entrar no painel aparece uma faixa amarela no topo nomeando as migrações

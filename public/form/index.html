@@ -152,6 +152,7 @@ let IDIOMA = navegador.startsWith('pt') ? 'pt' : navegador.startsWith('es') ? 'e
 let PLANOS = [], TEXTOS = {}, BLOCOS = [], CAMPOS = [], OBJETIVOS = [], CONVIDADO = null;
 let DISPONIVEIS = ['pt', 'en', 'es'];
 const TOKEN = new URLSearchParams(location.search).get('t') || '';
+let VISIVEIS = [];   // os campos que o montar() de fato colocou na tela
 
 // cada coisa no idioma pedido, caindo para o português quando não traduziram
 const tr = (obj, base) => (obj[`${base}_${IDIOMA}`] || obj[`${base}_pt`] || '').trim();
@@ -216,8 +217,12 @@ function montar() {
     convite.textContent = t.ola(String(CONVIDADO.nome).trim().split(/\s+/)[0]);
   } else convite.hidden = true;
 
+  /* Quem chega por link já comprou: o plano foi vendido na call e não é
+     escolha dele. Mostrar a lista só ensinaria que existem outros planos. */
+  VISIVEIS = CAMPOS.filter((c) => !(TOKEN && c.tipo === 'plano'));
+
   $('#passos').innerHTML = BLOCOS.map((b) => {
-    const meus = CAMPOS.filter((c) => c.bloco_chave === b.chave);
+    const meus = VISIVEIS.filter((c) => c.bloco_chave === b.chave);
     if (!meus.length) return '';
     return `<section class="passo"><h2>${esc(tr(b, 'titulo'))}</h2>
       ${tr(b, 'ajuda') ? `<p>${esc(tr(b, 'ajuda'))}</p>` : ''}
@@ -294,7 +299,7 @@ $('#form').onsubmit = async (ev) => {
   err.textContent = '';
 
   const respostas = {}; let faltando = null;
-  for (const c of CAMPOS) {
+  for (const c of VISIVEIS) {
     const v = valor(c.chave, c.tipo);
     if (c.obrigatorio && !v && !faltando) faltando = c.chave;
     if (v) respostas[tr(c, 'rot')] = v;

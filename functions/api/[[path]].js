@@ -3,6 +3,7 @@
 // Binding D1 obrigatório no Pages: nome "DB"
 // ============================================================
 
+const dataBR_ = (d) => String(d || '').slice(0, 10).split('-').reverse().join('/');
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
     status,
@@ -145,6 +146,33 @@ async function cotacaoDoDia(env, moeda, dia) {
   const ultima = await env.DB.prepare(
     'SELECT taxa FROM cotacoes WHERE moeda=? ORDER BY dia DESC LIMIT 1').bind(moeda).first();
   return ultima ? ultima.taxa : 0;
+}
+
+/* Cotação de agora, não a do fechamento de ontem. O conversor é usado na
+   call com o paciente dos EUA, então o número tem que ser o do momento.
+   Sem rede, cai para o que o banco já sabe e diz que é de outro dia. */
+async function cotacaoAgora(env, moeda) {
+  if (!moeda || moeda === 'BRL') return { moeda: 'BRL', taxa: 1, dia: hoje(), ao_vivo: true };
+  try {
+    const r = await fetch(`https://economia.awesomeapi.com.br/json/last/${moeda}-BRL`);
+    if (r.ok) {
+      const j = await r.json();
+      const it = j[Object.keys(j)[0]] || {};
+      const taxa = Number(it.bid || it.ask);
+      if (taxa > 0) {
+        const quando = String(it.create_date || '');
+        const dia = quando.slice(0, 10) || hoje();
+        await env.DB.prepare(
+          'INSERT OR REPLACE INTO cotacoes (dia,moeda,taxa,fonte) VALUES (?,?,?,?)')
+          .bind(dia, moeda, taxa, 'awesomeapi/last').run();
+        return { moeda, taxa, dia, hora: quando.slice(11, 16), ao_vivo: true };
+      }
+    }
+  } catch (e) { /* sem rede: o banco responde */ }
+  const taxa = await cotacaoDoDia(env, moeda, hoje());
+  const ult = await env.DB.prepare(
+    'SELECT dia FROM cotacoes WHERE moeda=? ORDER BY dia DESC LIMIT 1').bind(moeda).first();
+  return { moeda, taxa, dia: (ult && ult.dia) || hoje(), ao_vivo: false };
 }
 
 // ---------- gerar parcelas de um contrato ----------
@@ -833,6 +861,18 @@ export async function onRequest(context) {
           ORDER BY c.data_final ASC LIMIT 50`).all();
 
       const mesIni = mesAtual + '-01';
+      /* Quem já pagou e ainda não preencheu a anamnese. O link existe e não foi
+         usado: é exatamente a fila de quem ele precisa cobrar a ficha. */
+      const esperandoFicha = await talvez(() => env.DB.prepare(
+        `SELECT pa.id paciente_id, pa.nome, pa.apelido, pa.cod, pa.telefone, pa.form_token,
+                c.codigo_plano, c.data_inicial
+           FROM pacientes pa
+           JOIN contratos c ON c.paciente_id=pa.id AND c.status='ativo'
+          WHERE pa.form_token IS NOT NULL AND pa.form_token<>''
+            AND NOT EXISTS (SELECT 1 FROM anamneses a WHERE a.paciente_id=pa.id)
+          GROUP BY pa.id
+          ORDER BY c.data_inicial DESC LIMIT 30`).all(), { results: [] });
+
       const funilMes = await env.DB.prepare(
         `SELECT
            SUM(CASE WHEN substr(call_em,1,10) BETWEEN ? AND ? THEN 1 ELSE 0 END) calls,
@@ -859,6 +899,8 @@ export async function onRequest(context) {
         recebido_mes: recebido.results || [],
         recebido_mes_anterior: (recebidoAnt && recebidoAnt.total_brl) || 0,
         funil_mes: funilMes || { calls: 0, fechou: 0, perdeu: 0 },
+        esperando_ficha: (esperandoFicha.results || []).map((r) => ({
+          ...r, dias: diffDias(h, r.data_inicial) })),
       });
     }
 
@@ -1694,24 +1736,36 @@ export async function onRequest(context) {
     // fichas velhas (e para a impressão) não perderem nada.
     const FIXAS_REF = { 'café da manhã': 'cafe', 'lanche (manhã)': 'lanche_manha',
       'almoço': 'almoco', 'lanche (tarde)': 'lanche_tarde', 'jantar': 'jantar', 'ceia': 'ceia' };
+    /* A ficha é uma lista só, na ordem em que o Luca arrastou: treino e
+       refeição no mesmo lugar, cada um com hora. O treino continua indo também
+       para a coluna `treino`, que é o que impressões e fichas antigas leem. */
     function refeicoesDoCorpo(b) {
       const lista = Array.isArray(b.refeicoes) ? b.refeicoes
         .map((r) => ({
+          tipo: r.tipo === 'treino' ? 'treino' : 'refeicao',
           nome: String(r.nome || '').trim(),
           hora: String(r.hora || '').trim().slice(0, 5),
           texto: String(r.texto == null ? '' : r.texto),
         }))
         .filter((r) => r.nome) : null;
       const col = { cafe: null, lanche_manha: null, almoco: null, lanche_tarde: null, jantar: null, ceia: null };
+      let treino = b.treino == null ? null : String(b.treino);
       if (lista) {
         lista.forEach((r) => {
+          if (r.tipo === 'treino') return;
           const k = FIXAS_REF[r.nome.toLowerCase()];
           if (k && !col[k]) col[k] = r.texto || null;
         });
+        const treinos = lista.filter((r) => r.tipo === 'treino' && r.texto.trim());
+        if (treinos.length) {
+          treino = treinos.map((r) => (r.hora ? `${r.hora} — ${r.texto}` : r.texto)).join('\n\n');
+        } else if (lista.some((r) => r.tipo === 'treino')) {
+          treino = null;        // ele apagou o texto do treino: a coluna segue junto
+        }
       } else {
         Object.keys(col).forEach((k) => { col[k] = b[k] || null; });
       }
-      return { json: lista ? JSON.stringify(lista) : null, col };
+      return { json: lista ? JSON.stringify(lista) : null, col, treino };
     }
 
     if (rota === '/consultas' && metodo === 'POST') {
@@ -1721,12 +1775,12 @@ export async function onRequest(context) {
       let lbs = b.peso_lbs === '' || b.peso_lbs == null ? null : num(b.peso_lbs);
       if (kg && !lbs) lbs = Math.round(kg * 2.20462 * 10) / 10;
       if (lbs && !kg) kg = Math.round((lbs / 2.20462) * 10) / 10;
-      const { json: refJson, col } = refeicoesDoCorpo(b);
+      const { json: refJson, col, treino } = refeicoesDoCorpo(b);
       const res = await env.DB.prepare(
         `INSERT INTO consultas (paciente_id,data,peso_kg,peso_lbs,treino,cafe,lanche_manha,
              almoco,lanche_tarde,jantar,ceia,observacoes,refeicoes,objetivo,tmb,get_kcal,fator_atividade)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-      ).bind(b.paciente_id, b.data || hoje(), kg, lbs, b.treino || null, col.cafe,
+      ).bind(b.paciente_id, b.data || hoje(), kg, lbs, treino || null, col.cafe,
         col.lanche_manha, col.almoco, col.lanche_tarde, col.jantar,
         col.ceia, b.observacoes || null, refJson, b.objetivo || null,
         b.tmb ? num(b.tmb) : null, b.get_kcal ? num(b.get_kcal) : null,
@@ -1735,6 +1789,12 @@ export async function onRequest(context) {
       if (b.objetivo) await env.DB.prepare(
         "UPDATE pacientes SET objetivo=?, updated_at=datetime('now') WHERE id=?")
         .bind(b.objetivo, b.paciente_id).run();
+      // a altura medida na consulta corrige o cadastro: é onde ele mede de fato
+      if (b.altura_cm != null && b.altura_cm !== '' && num(b.altura_cm) > 0 && b.paciente_id) {
+        await env.DB.prepare(
+          "UPDATE pacientes SET altura_cm=?, updated_at=datetime('now') WHERE id=?")
+          .bind(num(b.altura_cm), b.paciente_id).run();
+      }
       return json({ ok: true, id: res.meta.last_row_id });
     }
 
@@ -1744,12 +1804,12 @@ export async function onRequest(context) {
       let lbs = b.peso_lbs === '' || b.peso_lbs == null ? null : num(b.peso_lbs);
       if (kg && !lbs) lbs = Math.round(kg * 2.20462 * 10) / 10;
       if (lbs && !kg) kg = Math.round((lbs / 2.20462) * 10) / 10;
-      const { json: refJson, col } = refeicoesDoCorpo(b);
+      const { json: refJson, col, treino } = refeicoesDoCorpo(b);
       await env.DB.prepare(
         `UPDATE consultas SET data=?,peso_kg=?,peso_lbs=?,treino=?,cafe=?,lanche_manha=?,almoco=?,
             lanche_tarde=?,jantar=?,ceia=?,observacoes=?,refeicoes=?,objetivo=?,tmb=?,get_kcal=?,
             fator_atividade=?,updated_at=datetime('now') WHERE id=?`
-      ).bind(b.data, kg, lbs, b.treino || null, col.cafe, col.lanche_manha,
+      ).bind(b.data, kg, lbs, treino || null, col.cafe, col.lanche_manha,
         col.almoco, col.lanche_tarde, col.jantar, col.ceia,
         b.observacoes || null, refJson, b.objetivo || null,
         b.tmb ? num(b.tmb) : null, b.get_kcal ? num(b.get_kcal) : null,
@@ -1757,6 +1817,12 @@ export async function onRequest(context) {
       if (b.objetivo && b.paciente_id) await env.DB.prepare(
         "UPDATE pacientes SET objetivo=?, updated_at=datetime('now') WHERE id=?")
         .bind(b.objetivo, b.paciente_id).run();
+      // a altura medida na consulta corrige o cadastro: é onde ele mede de fato
+      if (b.altura_cm != null && b.altura_cm !== '' && num(b.altura_cm) > 0 && b.paciente_id) {
+        await env.DB.prepare(
+          "UPDATE pacientes SET altura_cm=?, updated_at=datetime('now') WHERE id=?")
+          .bind(num(b.altura_cm), b.paciente_id).run();
+      }
       return json({ ok: true });
     }
 
@@ -1842,9 +1908,11 @@ export async function onRequest(context) {
 
     if (rota === '/cotacao' && metodo === 'GET') {
       const moeda = url.searchParams.get('moeda') || 'USD';
+      // vivo=1 vai na fonte buscar a cotação de agora; sem ele, usa a do dia pedido
+      if (url.searchParams.get('vivo') === '1') return json(await cotacaoAgora(env, moeda));
       const dia = url.searchParams.get('dia') || hoje();
       const taxa = await cotacaoDoDia(env, moeda, dia);
-      return json({ moeda, dia, taxa });
+      return json({ moeda, dia, taxa, ao_vivo: false });
     }
 
     if (rota === '/pagamentos' && metodo === 'POST') {
@@ -1931,6 +1999,91 @@ export async function onRequest(context) {
     // ==========================================================
     // FINANCEIRO (painel)
     // ==========================================================
+    /* Quem compõe cada número da tela. O card mostra o total; isso aqui
+       mostra as pessoas por trás dele, que é o que ele precisa para agir. */
+    if (rota === '/detalhe' && metodo === 'GET') {
+      const h = hoje();
+      const card = url.searchParams.get('card') || '';
+      const de = (url.searchParams.get('de') || h.slice(0, 8) + '01').slice(0, 10);
+      const ate = (url.searchParams.get('ate') || h).slice(0, 10);
+      const COMO = { // só o que de fato está em aberto e vale cobrar
+        abertas: `p.status IN ('aberta','parcial') AND c.status='ativo'
+                  AND pa.status NOT IN ('encerrado','parceria')` };
+      let r, titulo = '', nota = '';
+
+      if (card === 'recebido') {
+        titulo = 'Quem pagou no período';
+        nota = `${dataBR_(de)} a ${dataBR_(ate)} · em reais convertidos`;
+        r = await env.DB.prepare(
+          `SELECT pa.id paciente_id, pa.nome, pa.apelido, pa.cod,
+                  COUNT(*) qtd, SUM(pg.valor_brl) valor, 'BRL' moeda,
+                  MAX(pg.data) quando,
+                  GROUP_CONCAT(DISTINCT pg.moeda) moedas
+             FROM pagamentos pg JOIN pacientes pa ON pa.id=pg.paciente_id
+            WHERE pg.data BETWEEN ? AND ?
+            GROUP BY pa.id ORDER BY valor DESC LIMIT 300`).bind(de, ate).all();
+
+      } else if (card === 'entradas') {
+        titulo = 'Cada entrada do período';
+        nota = `${dataBR_(de)} a ${dataBR_(ate)}`;
+        r = await env.DB.prepare(
+          `SELECT pa.id paciente_id, pa.nome, pa.apelido, pa.cod,
+                  pg.valor, pg.moeda, pg.data quando, pg.forma detalhe
+             FROM pagamentos pg JOIN pacientes pa ON pa.id=pg.paciente_id
+            WHERE pg.data BETWEEN ? AND ?
+            ORDER BY pg.data DESC, pg.id DESC LIMIT 300`).bind(de, ate).all();
+
+      } else if (card === 'a_receber' || card === 'vencido') {
+        const soVencido = card === 'vencido';
+        titulo = soVencido ? 'Quem está com parcela vencida' : 'Parcelas em aberto';
+        nota = soVencido ? 'passou da data e não foi pago' : 'foto de agora, independe do período';
+        r = await env.DB.prepare(
+          `SELECT pa.id paciente_id, pa.nome, pa.apelido, pa.cod, pa.telefone,
+                  p.id parcela_id, (p.valor - p.pago) valor, p.moeda,
+                  p.vencimento quando, p.numero || '/' || p.total detalhe
+             FROM parcelas p
+             JOIN contratos c  ON c.id=p.contrato_id
+             JOIN pacientes pa ON pa.id=p.paciente_id
+            WHERE ${COMO.abertas} ${soVencido ? 'AND p.vencimento < ?' : ''}
+            ORDER BY p.vencimento ASC LIMIT 300`).bind(...(soVencido ? [h] : [])).all();
+
+      } else if (card === 'ativos') {
+        titulo = 'Pacientes ativos';
+        r = await env.DB.prepare(
+          `SELECT pa.id paciente_id, pa.nome, pa.apelido, pa.cod, pa.objetivo detalhe,
+                  (SELECT MAX(data) FROM consultas WHERE paciente_id=pa.id) quando
+             FROM pacientes pa WHERE pa.status='ativo'
+            ORDER BY pa.nome ASC LIMIT 500`).all();
+
+      } else if (card === 'renovacao') {
+        titulo = 'Planos terminando em 30 dias';
+        r = await env.DB.prepare(
+          `SELECT pa.id paciente_id, pa.nome, pa.apelido, pa.cod,
+                  c.data_final quando, c.codigo_plano detalhe,
+                  c.valor_cobrado valor, c.moeda
+             FROM contratos c JOIN pacientes pa ON pa.id=c.paciente_id
+            WHERE c.status='ativo' AND c.data_final BETWEEN ? AND ?
+            ORDER BY c.data_final ASC LIMIT 300`).bind(h, addDias(h, 30)).all();
+
+      } else if (card === 'fechamento') {
+        titulo = 'Calls decididas no mês';
+        nota = 'fechou ou perdeu — é o que entra na taxa';
+        r = await env.DB.prepare(
+          `SELECT pa.id paciente_id, pa.nome, pa.apelido, pa.cod,
+                  n.valor_previsto valor, n.moeda, n.etapa detalhe,
+                  n.fechado_em quando
+             FROM negociacoes n JOIN pacientes pa ON pa.id=n.paciente_id
+            WHERE n.tipo='novo' AND n.etapa IN ('fechou','perdido')
+              AND substr(n.fechado_em,1,7)=?
+            ORDER BY n.fechado_em DESC LIMIT 300`).bind(h.slice(0, 7)).all();
+
+      } else {
+        return json({ error: 'Card desconhecido.' }, 400);
+      }
+
+      return json({ card, titulo, nota, linhas: r.results || [] });
+    }
+
     if (rota === '/financeiro' && metodo === 'GET') {
       const h = hoje();
       const de = (url.searchParams.get('de') || addDias(h, -29)).slice(0, 10);
@@ -2223,6 +2376,100 @@ export async function onRequest(context) {
         }
       }
       return json({ ok: true, gravadas, casadas, completados, fichas });
+    }
+
+    /* ---------- pré-cadastro de venda ----------
+       Ele fecha a venda na call e preenche isto na hora: quem é a pessoa, o
+       plano vendido e como vai pagar. Sai daqui com o contrato criado e o link
+       da anamnese já preso a esse paciente — o cliente só completa o resto, e
+       não escolhe plano nenhum, porque quem vendeu foi o Luca. */
+    if (rota === '/pre-cadastro' && metodo === 'POST') {
+      const b = body || {};
+      const nome = String(b.nome || '').trim();
+      if (!nome) return bad('Informe o nome de quem fechou.');
+
+      const pais = String(b.pais || 'Brasil').trim();
+      const cidade = String(b.cidade || '').trim();
+      const fuso = await talvez(() => fusoDoLugar(env, cidade, pais), null);
+
+      // mesma pessoa de novo (renovação, ou ele já tinha cadastrado como lead)
+      let pac = b.paciente_id
+        ? await env.DB.prepare('SELECT * FROM pacientes WHERE id=?').bind(b.paciente_id).first()
+        : null;
+      if (!pac && b.email) pac = await env.DB.prepare(
+        'SELECT * FROM pacientes WHERE lower(trim(email))=lower(trim(?)) LIMIT 1').bind(b.email).first();
+      if (!pac) pac = await env.DB.prepare(
+        'SELECT * FROM pacientes WHERE lower(trim(nome))=lower(trim(?)) LIMIT 1').bind(nome).first();
+
+      let pid, cod;
+      if (pac) {
+        pid = pac.id; cod = pac.cod;
+        // o que ele acabou de ouvir na call vale mais que o cadastro velho
+        const BASE = `UPDATE pacientes SET nome=?, apelido=COALESCE(NULLIF(?,''),apelido),
+              email=COALESCE(NULLIF(?,''),email), telefone=COALESCE(NULLIF(?,''),telefone),
+              instagram=COALESCE(NULLIF(?,''),instagram), pais=COALESCE(NULLIF(?,''),pais),
+              status='ativo', updated_at=datetime('now')`;
+        const comuns = [nome, b.apelido || '', b.email || '', b.telefone || '',
+          b.instagram || '', pais];
+        const feito = await talvez(() => env.DB.prepare(
+          `${BASE}, cidade=COALESCE(NULLIF(?,''),cidade), fuso=COALESCE(NULLIF(?,''),fuso)
+             WHERE id=?`).bind(...comuns, cidade, fuso || '', pid).run(), null);
+        if (!feito) await env.DB.prepare(`${BASE} WHERE id=?`).bind(...comuns, pid).run();
+      } else {
+        const maior = await env.DB.prepare(
+          "SELECT MAX(CAST(cod AS INTEGER)) m FROM pacientes WHERE cod GLOB '[0-9]*'").first();
+        cod = String(b.cod || ((Number(maior && maior.m) || 0) + 1));
+        const COLS = 'cod,nome,apelido,email,telefone,instagram,pais,status,obs';
+        const vals = [cod, nome, b.apelido || null, b.email || null, b.telefone || null,
+          b.instagram || null, pais, 'ativo', b.obs || null];
+        const r = await talvez(() => env.DB.prepare(
+          `INSERT INTO pacientes (${COLS},cidade,fuso) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+          .bind(...vals, cidade || null, fuso).run(), null)
+          || await env.DB.prepare(
+            `INSERT INTO pacientes (${COLS}) VALUES (?,?,?,?,?,?,?,?,?)`).bind(...vals).run();
+        pid = r.meta.last_row_id;
+      }
+
+      // contrato: é a venda que ele acabou de fazer
+      const plano = b.plano_id
+        ? await env.DB.prepare('SELECT * FROM planos WHERE id=?').bind(b.plano_id).first()
+        : (b.codigo_plano
+          ? await env.DB.prepare('SELECT * FROM planos WHERE codigo=?').bind(b.codigo_plano).first()
+          : null);
+      const ini = b.data_inicial || hoje();
+      const fim = b.data_final || (plano ? addDias(ini, plano.dias) : addDias(ini, 30));
+      const moeda = b.moeda || MOEDA_POR_FORMA[(b.forma || '').toLowerCase()] || 'BRL';
+      const valor = b.valor_cobrado != null && b.valor_cobrado !== ''
+        ? num(b.valor_cobrado)
+        : (plano ? (moeda === 'USD' ? plano.preco_usd : plano.preco_brl) : 0);
+      const parcelas = Math.max(1, Number(b.qtd_parcelas || 1));
+
+      const cr = await env.DB.prepare(
+        `INSERT INTO contratos (paciente_id,plano_id,codigo_plano,data_inicial,data_final,
+             valor_cobrado,moeda,forma,qtd_parcelas,status,obs)
+         VALUES (?,?,?,?,?,?,?,?,?,'ativo',?)`
+      ).bind(pid, plano ? plano.id : null, plano ? plano.codigo : (b.codigo_plano || null),
+        ini, fim, valor, moeda, b.forma || null, parcelas,
+        b.obs || 'pré-cadastro da call de venda').run();
+      const contratoId = cr.meta.last_row_id;
+      await gerarParcelas(env, { id: contratoId, paciente_id: pid, data_inicial: ini,
+        valor_cobrado: valor, moeda, qtd_parcelas: parcelas });
+
+      // negociação do funil fecha junto, para a venda não ficar pendurada lá
+      await env.DB.prepare(
+        `UPDATE negociacoes SET etapa='fechou', contrato_id=?, fechado_em=?,
+            updated_at=datetime('now')
+          WHERE paciente_id=? AND tipo='novo' AND etapa NOT IN ('fechou','perdido')`)
+        .bind(contratoId, hoje(), pid).run();
+
+      // o link da anamnese nasce preso a este paciente
+      const token = novoToken();
+      await env.DB.prepare(
+        "UPDATE pacientes SET form_token=?, updated_at=datetime('now') WHERE id=?")
+        .bind(token, pid).run();
+      const link = `${await baseFormulario(env, url)}/?t=${token}`;
+
+      return json({ ok: true, paciente_id: pid, cod, contrato_id: contratoId, link, moeda, valor });
     }
 
     /* ---------- fichas sem dono ----------
