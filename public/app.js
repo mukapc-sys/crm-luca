@@ -326,7 +326,8 @@ async function preCadastro(pacienteId) {
       paciente completa no formulário que sai daqui.</p>
 
     <div class="grid g2">
-      <div><label>Nome completo *</label><input id="pcNome" value="${esc(p.nome || '')}"></div>
+      <div><label>Nome completo</label><input id="pcNome" value="${esc(p.nome || '')}"
+        placeholder="se não souber agora, deixe em branco"></div>
       <div><label>Como você chama</label><input id="pcApelido" value="${esc(p.apelido || '')}"
         placeholder="apelido que você usa na agenda"></div>
       <div><label>WhatsApp</label><input id="pcTel" value="${esc(p.telefone || '')}"
@@ -395,7 +396,8 @@ async function preCadastro(pacienteId) {
 
   $('#pcSalvar').onclick = async () => {
     const nome = $('#pcNome').value.trim();
-    if (!nome) return toast('Informe o nome de quem fechou.');
+    // só o plano é obrigatório: na call ele nem sempre tem o nome completo, e
+    // o nome chega depois pelo próprio formulário que sai daqui
     if (!$('#pcPlano').value) return toast('Escolha o plano que foi vendido.');
     // valor zerado não gera cobrança nenhuma: ou é cortesia, ou é descuido
     if (!(Number($('#pcValor').value) > 0)
@@ -417,7 +419,7 @@ async function preCadastro(pacienteId) {
     catch (e) { return toast(e.message); }
     liberar();
     CACHE.pacientes = null;
-    mostrarLinkPreCadastro(r, nome, body.telefone);
+    mostrarLinkPreCadastro(r, r.nome || nome, body.telefone);
   };
 }
 
@@ -433,14 +435,19 @@ async function reenviarFicha(pacienteId) {
 }
 
 function mostrarLinkPreCadastro(r, nome, telefone) {
-  const primeiro = String(nome || '').trim().split(/\s+/)[0];
+  // sem nome de verdade, cumprimentar pelo rótulo provisório seria "Oi Sem!"
+  const bruto = String(nome || '').trim();
+  const primeiro = (r.sem_nome || /^sem nome/i.test(bruto)) ? '' : bruto.split(/\s+/)[0];
   modal(r.reenvio ? 'Mandar o formulário de novo' : 'Pronto — agora mande o formulário', `
     <p style="font-size:13.5px;color:var(--txt-2);margin:0 0 14px">
       ${r.reenvio
         ? `<b>${esc(nome)}</b>${r.cod ? ` (COD ${esc(r.cod)})` : ''} ainda não respondeu.
            Este é o mesmo link de antes — continua valendo.`
-        : `<b>${esc(nome)}</b> entrou como paciente ativo${r.cod ? ` (COD ${esc(r.cod)})` : ''},
-           com o contrato e as parcelas já criados. Falta só a ficha dele.`}</p>
+        : r.sem_nome
+          ? `Venda registrada no <b>COD ${esc(r.cod)}</b>, com o contrato e as parcelas
+             criados. O nome entra sozinho quando ele responder o formulário.`
+          : `<b>${esc(nome)}</b> entrou como paciente ativo${r.cod ? ` (COD ${esc(r.cod)})` : ''},
+             com o contrato e as parcelas já criados. Falta só a ficha dele.`}</p>
     <label>Link do formulário</label>
     <input id="pcLink" readonly onclick="this.select()" value="${esc(r.link)}"
       style="font-family:ui-monospace,monospace;font-size:12.5px">
@@ -455,7 +462,7 @@ function mostrarLinkPreCadastro(r, nome, telefone) {
     <button class="btn ghost" onclick="fecharModal(true);if(TELA==='home')telaHome();else if(TELA==='pacientes')carregarPacientes(true)">Fechar</button>
     <button class="btn ouro" onclick="fecharModal(true);abrirPaciente(${r.paciente_id})">Abrir a ficha</button>`);
   $('#pcZap').onclick = () => zap(telefone,
-    `Oi ${primeiro}! Que bom ter você comigo. Preenche essa ficha pra mim que é por ela que eu monto o seu plano: ${r.link}`);
+    `Oi${primeiro ? ' ' + primeiro : ''}! Que bom ter você comigo. Preenche essa ficha pra mim que é por ela que eu monto o seu plano: ${r.link}`);
 }
 
 /* ---------- detalhe de um card ----------
@@ -2006,6 +2013,7 @@ async function abrirPagamento(pacienteId, parcelaId, valor, moeda) {
       <div><label>Cotação usada (R$)</label><input id="gCot" type="number" step="0.0001"></div>
       <div><label>Equivale a</label><div id="gBrl" style="padding:9px 0;font-weight:650">—</div></div>
     </div>
+    <p id="gAviso" style="font-size:13px;color:var(--erro);font-weight:600;margin:8px 0 0"></p>
     <p style="font-size:12.5px;color:var(--txt-2);margin:8px 0 0">
       A cotação vem do câmbio do dia. Se a plataforma converteu com outra taxa, corrija aqui —
       o painel passa a bater com o extrato.</p>
@@ -2017,12 +2025,18 @@ async function abrirPagamento(pacienteId, parcelaId, valor, moeda) {
 
   async function buscarCotacao() {
     const m = $('#gMoeda').value;
+    $('#gAviso').textContent = '';
     if (m === 'BRL') { $('#gCot').value = 1; calc(); return; }
     $('#gCot').value = ''; $('#gBrl').textContent = 'buscando câmbio…';
-    try {
-      const r = await api(`/cotacao?moeda=${m}&dia=${$('#gData').value}`);
-      $('#gCot').value = Number(r.taxa || 0).toFixed(4);
-    } catch { $('#gCot').value = ''; }
+    let r = null;
+    try { r = await api(`/cotacao?moeda=${m}&dia=${$('#gData').value}`); } catch { r = null; }
+    // taxa zero entraria como 1:1 e registraria US$ 250 como R$ 250
+    if (r && Number(r.taxa) > 0) $('#gCot').value = Number(r.taxa).toFixed(4);
+    else {
+      $('#gCot').value = '';
+      $('#gAviso').textContent =
+        `Não consegui a cotação de ${m} nesse dia. Digite a taxa que a plataforma usou.`;
+    }
     calc();
   }
   const calc = () => {
@@ -2035,6 +2049,10 @@ async function abrirPagamento(pacienteId, parcelaId, valor, moeda) {
   buscarCotacao();
 
   $('#salvarPg').onclick = async () => {
+    if ($('#gMoeda').value !== 'BRL' && !(Number($('#gCot').value) > 0)) {
+      $('#gCot').focus();
+      return toast('Informe a cotação usada — sem ela o valor em reais sai errado.');
+    }
     try {
       await api('/pagamentos', { method: 'POST', body: {
         paciente_id: pacienteId, parcela_id: parcelaId, data: $('#gData').value,
@@ -3957,25 +3975,41 @@ let CV_RELOGIO = null;
 
 async function ligarMoeda() {
   const taxa = $('#cvTaxa'), estr = $('#cvEstr'), brl = $('#cvBrl'), moeda = $('#cvMoeda');
+  // sem taxa, limpar o lado convertido é mais honesto que deixar um número
+  // que não corresponde a nada
+  const estrangeiraSemTaxa = () => { brl.value = ''; };
+
   const buscar = async (porBotao) => {
     $('#cvRotEstr').textContent = moeda.value;
     if (porBotao) $('#cvCotacaoNota').textContent = 'Buscando…';
-    try {
-      const r = await api(`/cotacao?moeda=${moeda.value}&vivo=1`);
-      taxa.value = Number(r.taxa || 0).toFixed(4);
-      const emBR = Number(r.taxa || 0).toLocaleString('pt-BR',
-        { minimumFractionDigits: 4, maximumFractionDigits: 4 });
-      // dizer de quando é a cotação importa: ele fecha preço em cima disso
-      $('#cvCotacaoNota').innerHTML = r.ao_vivo
-        ? `<b>1 ${moeda.value} = R$ ${emBR}</b> · cotação de agora${r.hora ? `, das ${r.hora}` : ''}.
-           Dá para corrigir à mão.`
-        : `<b>1 ${moeda.value} = R$ ${emBR}</b> · última conhecida, de ${dataBR(r.dia)} —
-           não consegui falar com a fonte agora. Dá para corrigir à mão.`;
-    } catch {
-      $('#cvCotacaoNota').textContent = 'Não consegui buscar a cotação agora — digite a taxa à mão.';
+    let r;
+    try { r = await api(`/cotacao?moeda=${moeda.value}&vivo=1`); }
+    catch { r = null; }
+
+    // taxa 0 não é cotação, é falta de cotação: campo vazio e aviso claro,
+    // nunca "R$ 0,0000", que faria qualquer conversão dar zero
+    if (!r || !(Number(r.taxa) > 0)) {
+      taxa.value = '';
+      estrangeiraSemTaxa();
+      $('#cvCotacaoNota').innerHTML =
+        `<b style="color:var(--erro)">Não consegui a cotação de ${moeda.value} agora.</b>
+         Digite a taxa à mão aqui ao lado que a conversão volta a funcionar.`;
+      return;
     }
+
+    taxa.value = Number(r.taxa).toFixed(4);
+    const emBR = Number(r.taxa).toLocaleString('pt-BR',
+      { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+    const fonte = r.fonte ? ` · fonte: ${esc(r.fonte)}` : '';
+    // dizer de quando é a cotação importa: ele fecha preço em cima disso
+    $('#cvCotacaoNota').innerHTML = r.ao_vivo
+      ? `<b>1 ${moeda.value} = R$ ${emBR}</b> · cotação de agora${r.hora ? `, das ${r.hora}` : ''}${fonte}.
+         Dá para corrigir à mão.`
+      : `<b>1 ${moeda.value} = R$ ${emBR}</b> · ${r.dia ? `última conhecida, de ${dataBR(r.dia)}` : 'guardada no sistema'} —
+         não consegui falar com a fonte agora${fonte}. Dá para corrigir à mão.`;
     daEstrangeira();
   };
+
   const daEstrangeira = () => {
     const t = Number(taxa.value) || 0;
     if (estr.value !== '' && t) brl.value = (Number(estr.value) * t).toFixed(2);

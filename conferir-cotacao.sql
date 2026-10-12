@@ -1,0 +1,1 @@
+SELECT pg.id, pg.data, pa.nome, pg.moeda, pg.valor, pg.cotacao, pg.valor_brl, pg.forma FROM pagamentos pg JOIN pacientes pa ON pa.id=pg.paciente_id WHERE pg.moeda <> 'BRL' AND (pg.cotacao IS NULL OR pg.cotacao <= 0 OR pg.cotacao = 1) ORDER BY pg.data DESC;

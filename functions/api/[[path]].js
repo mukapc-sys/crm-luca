@@ -82,42 +82,90 @@ const SIMBOLO = { BRL: 'R$', USD: 'US$', GBP: '£', EUR: '€' };
 const dataBR = (d) => (!d ? '' : String(d).slice(0, 10).split('-').reverse().join('/'));
 const MOEDA_POR_FORMA = { pix: 'BRL', asaas: 'BRL', infinity: 'BRL', zelle: 'USD', paypal: 'USD' };
 
+/* ---------- de onde vem a cotação ----------
+   A AwesomeAPI passou a limitar por cota e responde 429; quando isso
+   acontece o painel não pode ficar sem câmbio, então são várias fontes na
+   fila e vale a primeira que responder. Todas são públicas e sem chave. */
+const FONTES_COTACAO = [
+  { nome: 'AwesomeAPI',
+    url: (m) => `https://economia.awesomeapi.com.br/json/last/${m}-BRL`,
+    ler: (j) => { const it = j[Object.keys(j)[0]] || {};
+      return { taxa: Number(it.bid || it.ask), quando: String(it.create_date || '') }; } },
+  { nome: 'Frankfurter (BCE)',
+    url: (m) => `https://api.frankfurter.dev/v1/latest?base=${m}&symbols=BRL`,
+    ler: (j) => ({ taxa: Number(j && j.rates && j.rates.BRL), quando: String(j.date || '') }) },
+  { nome: 'ExchangeRate-API',
+    url: (m) => `https://open.er-api.com/v6/latest/${m}`,
+    ler: (j) => ({ taxa: Number(j && j.rates && j.rates.BRL),
+      quando: String(j.time_last_update_utc || '') }) },
+  { nome: 'currency-api',
+    url: (m) => `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/${m.toLowerCase()}.json`,
+    ler: (j, m) => { const o = j[m.toLowerCase()] || {};
+      return { taxa: Number(o.brl), quando: String(j.date || '') }; } },
+];
+
 // ---------- cotação ----------
 const semTraco = (d) => String(d).slice(0, 10).replace(/-/g, '');
 
-// Busca a série diária real (bid de fechamento de cada dia) e grava no banco.
-// Um pedido cobre um intervalo inteiro, então a importação não faz uma chamada por data.
+/* Série diária de um intervalo inteiro, num pedido só — a importação não faz
+   uma chamada por data. Mesma história da cotação de agora: a AwesomeAPI
+   limita por cota, então o Frankfurter entra quando ela não responde. */
 async function sincronizarCotacoes(env, moeda, de, ate) {
   if (!moeda || moeda === 'BRL') return 0;
   let gravadas = 0;
   let inicio = de;
-  // a API devolve no máximo ~360 registros por pedido
   while (inicio <= ate) {
+    // a AwesomeAPI devolve no máximo ~360 registros por pedido
     const fim = addDias(inicio, 330) > ate ? ate : addDias(inicio, 330);
-    const u = `https://economia.awesomeapi.com.br/json/daily/${moeda}-BRL/360`
-      + `?start_date=${semTraco(inicio)}&end_date=${semTraco(fim)}`;
-    try {
-      const r = await fetch(u);
-      if (r.ok) {
-        const lista = await r.json();
-        if (Array.isArray(lista)) {
-          const st = [];
-          for (const it of lista) {
-            const taxa = Number(it.bid || it.ask);
-            const ts = Number(it.timestamp);
-            if (!(taxa > 0) || !ts) continue;
-            const dia = new Date(ts * 1000).toISOString().slice(0, 10);
-            st.push(env.DB.prepare(
-              'INSERT OR REPLACE INTO cotacoes (dia,moeda,taxa,fonte) VALUES (?,?,?,?)')
-              .bind(dia, moeda, taxa, 'awesomeapi/daily'));
-          }
-          if (st.length) { await env.DB.batch(st); gravadas += st.length; }
-        }
-      }
-    } catch (e) { /* sem rede: segue com o que já tem */ }
+    let linhas = await serieAwesome(moeda, inicio, fim);
+    if (!linhas.length) linhas = await serieFrankfurter(moeda, inicio, fim);
+    if (linhas.length) {
+      const st = linhas.map(([dia, taxa, fonte]) => env.DB.prepare(
+        'INSERT OR REPLACE INTO cotacoes (dia,moeda,taxa,fonte) VALUES (?,?,?,?)')
+        .bind(dia, moeda, taxa, fonte));
+      await env.DB.batch(st);
+      gravadas += st.length;
+    }
     inicio = addDias(fim, 1);
   }
   return gravadas;
+}
+
+async function serieAwesome(moeda, de, ate) {
+  const u = `https://economia.awesomeapi.com.br/json/daily/${moeda}-BRL/360`
+    + `?start_date=${semTraco(de)}&end_date=${semTraco(ate)}`;
+  try {
+    const r = await fetch(u);
+    if (!r.ok) return [];
+    const lista = await r.json();
+    if (!Array.isArray(lista)) return [];
+    const out = [];
+    for (const it of lista) {
+      const taxa = Number(it.bid || it.ask);
+      const ts = Number(it.timestamp);
+      if (!(taxa > 0) || !ts) continue;
+      out.push([new Date(ts * 1000).toISOString().slice(0, 10), taxa, 'awesomeapi/daily']);
+    }
+    return out;
+  } catch (e) { return []; }
+}
+
+// O BCE não publica fim de semana nem feriado; quem preenche esses buracos é
+// o cotacaoDoDia, que anda para trás até achar o pregão anterior.
+async function serieFrankfurter(moeda, de, ate) {
+  try {
+    const r = await fetch(
+      `https://api.frankfurter.dev/v1/${de}..${ate}?base=${moeda}&symbols=BRL`,
+      { headers: { accept: 'application/json' } });
+    if (!r.ok) return [];
+    const j = await r.json();
+    const out = [];
+    for (const [dia, v] of Object.entries((j && j.rates) || {})) {
+      const taxa = Number(v && v.BRL);
+      if (taxa > 0) out.push([dia, taxa, 'frankfurter/bce']);
+    }
+    return out;
+  } catch (e) { return []; }
 }
 
 // Taxa de uma data. Usa o dia exato; se não houver (fim de semana, feriado),
@@ -152,27 +200,34 @@ async function cotacaoDoDia(env, moeda, dia) {
    call com o paciente dos EUA, então o número tem que ser o do momento.
    Sem rede, cai para o que o banco já sabe e diz que é de outro dia. */
 async function cotacaoAgora(env, moeda) {
-  if (!moeda || moeda === 'BRL') return { moeda: 'BRL', taxa: 1, dia: hoje(), ao_vivo: true };
-  try {
-    const r = await fetch(`https://economia.awesomeapi.com.br/json/last/${moeda}-BRL`);
-    if (r.ok) {
-      const j = await r.json();
-      const it = j[Object.keys(j)[0]] || {};
-      const taxa = Number(it.bid || it.ask);
-      if (taxa > 0) {
-        const quando = String(it.create_date || '');
-        const dia = quando.slice(0, 10) || hoje();
-        await env.DB.prepare(
-          'INSERT OR REPLACE INTO cotacoes (dia,moeda,taxa,fonte) VALUES (?,?,?,?)')
-          .bind(dia, moeda, taxa, 'awesomeapi/last').run();
-        return { moeda, taxa, dia, hora: quando.slice(11, 16), ao_vivo: true };
-      }
+  if (!moeda || moeda === 'BRL') {
+    return { moeda: 'BRL', taxa: 1, dia: hoje(), ao_vivo: true, fonte: 'fixo' };
+  }
+  const tentadas = [];
+  for (const f of FONTES_COTACAO) {
+    try {
+      const r = await fetch(f.url(moeda), { headers: { accept: 'application/json' } });
+      if (!r.ok) { tentadas.push(`${f.nome}: HTTP ${r.status}`); continue; }
+      const { taxa, quando } = f.ler(await r.json(), moeda);
+      if (!(taxa > 0)) { tentadas.push(`${f.nome}: não cobre ${moeda}`); continue; }
+      const d = String(quando).match(/\d{4}-\d{2}-\d{2}/);
+      const hm = String(quando).match(/\d{2}:\d{2}/);
+      const dia = d ? d[0] : hoje();
+      await env.DB.prepare(
+        'INSERT OR REPLACE INTO cotacoes (dia,moeda,taxa,fonte) VALUES (?,?,?,?)')
+        .bind(dia, moeda, taxa, f.nome).run();
+      return { moeda, taxa, dia, hora: hm ? hm[0] : null, ao_vivo: true, fonte: f.nome, tentadas };
+    } catch (e) {
+      tentadas.push(`${f.nome}: ${String((e && e.message) || e).slice(0, 60)}`);
     }
-  } catch (e) { /* sem rede: o banco responde */ }
+  }
+  // nenhuma fonte respondeu: o que o banco souber, dizendo de quando é.
+  // taxa 0 significa "não sei" — nunca pode chegar na tela como cotação.
   const taxa = await cotacaoDoDia(env, moeda, hoje());
   const ult = await env.DB.prepare(
-    'SELECT dia FROM cotacoes WHERE moeda=? ORDER BY dia DESC LIMIT 1').bind(moeda).first();
-  return { moeda, taxa, dia: (ult && ult.dia) || hoje(), ao_vivo: false };
+    'SELECT dia, fonte FROM cotacoes WHERE moeda=? ORDER BY dia DESC LIMIT 1').bind(moeda).first();
+  return { moeda, taxa, dia: (ult && ult.dia) || null, ao_vivo: false,
+    fonte: (ult && ult.fonte) || null, tentadas };
 }
 
 // ---------- gerar parcelas de um contrato ----------
@@ -645,6 +700,11 @@ export async function onRequest(context) {
       let pid, cod;
       if (pac) {
         pid = pac.id; cod = pac.cod;
+        /* Pré-cadastro feito sem o nome completo: quem responde pelo link é a
+           própria pessoa, então o nome dela substitui o rótulo provisório. */
+        if (/^sem nome/i.test(String(pac.nome || '').trim()) || !String(pac.nome || '').trim()) {
+          await env.DB.prepare('UPDATE pacientes SET nome=? WHERE id=?').bind(nome, pid).run();
+        }
         await env.DB.prepare(
           `UPDATE pacientes SET email=COALESCE(NULLIF(?,''),email),
                telefone=COALESCE(NULLIF(?,''),telefone), pais=COALESCE(NULLIF(?,''),pais),
@@ -1922,8 +1982,13 @@ export async function onRequest(context) {
       const moeda = b.moeda || 'BRL';
       const cotacao = b.cotacao != null && b.cotacao !== ''
         ? num(b.cotacao) : await cotacaoDoDia(env, moeda, data);
+      // sem cotação, converter por 1 registraria US$ 250 como R$ 250: é melhor
+      // recusar e pedir a taxa do que gravar faturamento errado
+      if (moeda !== 'BRL' && !(cotacao > 0)) {
+        return bad(`Não consegui a cotação de ${moeda} em ${data}. Informe a cotação usada.`);
+      }
       const valor = num(b.valor);
-      const valorBrl = Math.round(valor * (cotacao || 1) * 100) / 100;
+      const valorBrl = Math.round(valor * (moeda === 'BRL' ? 1 : cotacao) * 100) / 100;
 
       await env.DB.prepare(
         `INSERT INTO pagamentos (parcela_id,paciente_id,data,valor,moeda,cotacao,valor_brl,forma,obs)
@@ -2385,8 +2450,11 @@ export async function onRequest(context) {
        não escolhe plano nenhum, porque quem vendeu foi o Luca. */
     if (rota === '/pre-cadastro' && metodo === 'POST') {
       const b = body || {};
-      const nome = String(b.nome || '').trim();
-      if (!nome) return bad('Informe o nome de quem fechou.');
+      /* Só o plano é obrigatório. Na call ele costuma ter o plano fechado antes
+         do nome completo, e o nome chega depois pelo próprio formulário —
+         enquanto isso o paciente fica com um rótulo que diz o que falta. */
+      if (!b.plano_id && !b.codigo_plano) return bad('Escolha o plano que foi vendido.');
+      const nome = String(b.nome || b.apelido || '').trim();
 
       const pais = String(b.pais || 'Brasil').trim();
       const cidade = String(b.cidade || '').trim();
@@ -2398,14 +2466,17 @@ export async function onRequest(context) {
         : null;
       if (!pac && b.email) pac = await env.DB.prepare(
         'SELECT * FROM pacientes WHERE lower(trim(email))=lower(trim(?)) LIMIT 1').bind(b.email).first();
-      if (!pac) pac = await env.DB.prepare(
+      // sem nome não dá para reconhecer ninguém pelo nome: vira cadastro novo
+      if (!pac && nome) pac = await env.DB.prepare(
         'SELECT * FROM pacientes WHERE lower(trim(nome))=lower(trim(?)) LIMIT 1').bind(nome).first();
 
       let pid, cod;
       if (pac) {
         pid = pac.id; cod = pac.cod;
-        // o que ele acabou de ouvir na call vale mais que o cadastro velho
-        const BASE = `UPDATE pacientes SET nome=?, apelido=COALESCE(NULLIF(?,''),apelido),
+        // o que ele acabou de ouvir na call vale mais que o cadastro velho —
+        // mas sem nome novo o que já estava lá continua
+        const BASE = `UPDATE pacientes SET nome=COALESCE(NULLIF(?,''),nome),
+              apelido=COALESCE(NULLIF(?,''),apelido),
               email=COALESCE(NULLIF(?,''),email), telefone=COALESCE(NULLIF(?,''),telefone),
               instagram=COALESCE(NULLIF(?,''),instagram), pais=COALESCE(NULLIF(?,''),pais),
               status='ativo', updated_at=datetime('now')`;
@@ -2420,7 +2491,9 @@ export async function onRequest(context) {
           "SELECT MAX(CAST(cod AS INTEGER)) m FROM pacientes WHERE cod GLOB '[0-9]*'").first();
         cod = String(b.cod || ((Number(maior && maior.m) || 0) + 1));
         const COLS = 'cod,nome,apelido,email,telefone,instagram,pais,status,obs';
-        const vals = [cod, nome, b.apelido || null, b.email || null, b.telefone || null,
+        // o rótulo diz o que falta e já traz o COD, para ele achar na lista
+        const vals = [cod, nome || `Sem nome · COD ${cod}`,
+          b.apelido || null, b.email || null, b.telefone || null,
           b.instagram || null, pais, 'ativo', b.obs || null];
         const r = await talvez(() => env.DB.prepare(
           `INSERT INTO pacientes (${COLS},cidade,fuso) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
@@ -2469,7 +2542,9 @@ export async function onRequest(context) {
         .bind(token, pid).run();
       const link = `${await baseFormulario(env, url)}/?t=${token}`;
 
-      return json({ ok: true, paciente_id: pid, cod, contrato_id: contratoId, link, moeda, valor });
+      const fim2 = await env.DB.prepare('SELECT nome FROM pacientes WHERE id=?').bind(pid).first();
+      return json({ ok: true, paciente_id: pid, cod, nome: fim2 && fim2.nome,
+        sem_nome: !nome, contrato_id: contratoId, link, moeda, valor });
     }
 
     /* ---------- fichas sem dono ----------

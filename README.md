@@ -158,19 +158,42 @@ sem ele perceber. Teclado e setas continuam funcionando normalmente.
 
 ## Cotação
 
-Buscada do câmbio do dia (AwesomeAPI) e guardada por data — um pagamento
-antigo continua valendo pela taxa da época. O campo é **editável**: se o
-Zelle ou a Wise converteram com outra taxa, corrija e o painel bate com o
-extrato.
+Guardada por data — um pagamento antigo continua valendo pela taxa da
+época. O campo é **editável**: se o Zelle ou a Wise converteram com outra
+taxa, corrija e o painel bate com o extrato.
+
+### De onde vem
+
+São quatro fontes públicas, sem chave, na fila; vale a primeira que
+responder, e o painel diz qual foi:
+
+1. **AwesomeAPI** — a mais próxima do agora, mas passou a limitar por cota
+   e responde `429` quando estoura
+2. **Frankfurter (BCE)** — dólar, euro, libra, franco, dólar canadense e
+   australiano, iene; tem série histórica, mas não publica fim de semana
+   nem feriado
+3. **ExchangeRate-API** — cobre moedas fora da lista do BCE
+4. **currency-api** — última reserva
+
+Vale para a cotação de agora e para a série histórica que a importação usa.
+Se nenhuma responder, o painel **não inventa**: o campo fica vazio, com o
+aviso de digitar a taxa à mão. Nunca aparece `R$ 0,0000`, que faria toda
+conversão dar zero.
+
+Pagamento em moeda estrangeira **sem cotação é recusado** — antes ele
+entraria convertido por 1, e US$ 250 viraria R$ 250 no faturamento. Para
+conferir se algum pagamento antigo pegou isso, rode
+`conferir-cotacao.sql`: lista pagamento em moeda estrangeira com cotação
+ausente, zerada ou igual a 1.
 
 Na tela de **Conversores**, a moeda puxa a cotação **de agora**, não a do
 fechamento de ontem: é com ela que ele fecha preço na call. A linha de
-cima diz a que horas aquela cotação foi medida, tem botão de atualizar, e
-ela se renova sozinha a cada 5 minutos com a tela aberta. Sem resposta da
-fonte, usa a última conhecida e diz de que dia é — em vez de mostrar um
-número velho como se fosse de hoje. Além de dólar, euro e libra, dá para
-converter dólar canadense, franco suíço, dólar australiano, peso argentino
-e iene.
+cima diz de qual fonte veio e, quando a fonte informa, a que horas foi
+medida; tem botão de atualizar e se renova sozinha a cada 5 minutos com a
+tela aberta. Sem resposta de nenhuma fonte, usa a última conhecida e diz
+de que dia é — em vez de mostrar um número velho como se fosse de hoje.
+Além de dólar, euro e libra, dá para converter dólar canadense, franco
+suíço, dólar australiano, peso argentino e iene.
 
 ## Unidades e fuso
 
@@ -280,6 +303,12 @@ O botão **Vendeu! Pré-cadastro**, no topo do Início, é para ser preenchido
 durante a conversa, enquanto o cliente ainda está na linha. Pede o
 essencial — quem é, WhatsApp, cidade — e, principalmente, **o plano e a
 forma de pagamento que acabaram de ser fechados**.
+
+**O único campo obrigatório é o plano.** Na call o plano fecha antes de o
+nome completo aparecer. Sem nome, o paciente entra como *Sem nome · COD
+123* e o nome de verdade chega sozinho quando ele responder o formulário —
+o rótulo é substituído, não duplicado. Se só o apelido for preenchido, é
+ele que vira o nome.
 
 Ao salvar, num clique só:
 
