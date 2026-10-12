@@ -1464,11 +1464,11 @@ export async function onRequest(context) {
         if (linhas.length) await env.DB.prepare(
           "UPDATE settings SET value='' WHERE key='postit'").run();
       }
-      // sem data vai para o fim da lista, não para o começo
+      /* A ordem é a que ele arrastou. Era por data, mas aí arrastar não
+         grudava: a lista voltava sozinha para a ordem do calendário. O botão
+         "Por data" renumera tudo quando ele quiser a ordem da agenda de volta. */
       const abertas = await env.DB.prepare(
-        `SELECT * FROM tarefas WHERE feita=0
-          ORDER BY CASE WHEN data IS NULL OR data='' THEN 1 ELSE 0 END,
-                   data ASC, COALESCE(NULLIF(hora,''),'99:99') ASC, posicao ASC, id ASC`).all();
+        'SELECT * FROM tarefas WHERE feita=0 ORDER BY posicao ASC, id ASC').all();
       const feitas = await env.DB.prepare(
         'SELECT * FROM tarefas WHERE feita=1 ORDER BY feita_em DESC, id DESC LIMIT 50').all();
       const quantasFeitas = await env.DB.prepare(
@@ -1479,6 +1479,30 @@ export async function onRequest(context) {
         total_feitas: (quantasFeitas && quantasFeitas.c) || 0,
       });
     }
+    if (rota === '/tarefas/ordem' && metodo === 'POST') {
+      const ids = Array.isArray(body.ids) ? body.ids : [];
+      if (!ids.length) return json({ ok: true, mudadas: 0 });
+      const st = ids.map((id, i) => env.DB.prepare(
+        'UPDATE tarefas SET posicao=? WHERE id=?').bind(i + 1, Number(id)));
+      await env.DB.batch(st);
+      return json({ ok: true, mudadas: ids.length });
+    }
+
+    /* Renumera pela data: a de hoje sobe, a sem data desce. Volta a ordem do
+       calendário sem tirar dele a liberdade de arrastar depois. */
+    if (rota === '/tarefas/por-data' && metodo === 'POST') {
+      const r = await env.DB.prepare(
+        `SELECT id FROM tarefas WHERE feita=0
+          ORDER BY CASE WHEN data IS NULL OR data='' THEN 1 ELSE 0 END,
+                   data ASC, COALESCE(NULLIF(hora,''),'99:99') ASC, id ASC`).all();
+      const ids = (r.results || []).map((x) => x.id);
+      if (ids.length) {
+        await env.DB.batch(ids.map((id, i) => env.DB.prepare(
+          'UPDATE tarefas SET posicao=? WHERE id=?').bind(i + 1, id)));
+      }
+      return json({ ok: true, ordenadas: ids.length });
+    }
+
     if (rota === '/tarefas' && metodo === 'POST') {
       const texto = String(body.texto || '').trim().slice(0, 500);
       if (!texto) return bad('Escreva a tarefa.');

@@ -230,6 +230,21 @@ tudo como estava. Ela já abre com o peso que ele acabou de digitar e com a
 idade da data daquela consulta, e o botão **Usar na ficha** devolve o peso e
 o nível de atividade para a ficha.
 
+## As três pesagens da ficha
+
+No alto da ficha de consulta ficam lado a lado o **peso inicial** (a primeira
+pesagem registrada, com a data), o **peso da última consulta** e o campo do
+**peso de hoje**. Logo abaixo, a diferença em kg e em porcentagem contra as
+duas referências:
+
+> ▼ **1,7 kg** 2% desde a última · ▼ **10,9 kg** 11,8% desde o início
+
+Subir e descer têm seta e palavra, não só cor: ganhar peso não é ruim nem bom
+por si — quem diz isso é o objetivo. Quando o paciente só tem uma pesagem
+anterior, a coluna do meio diz "Também a última" e a linha não repete o
+mesmo número duas vezes. Editando uma ficha antiga, "última" é a consulta
+anterior **àquela ficha**, não a mais recente de todas.
+
 ## TMB e aniversário
 
 A ficha de consulta calcula a TMB assim que o peso é digitado, usando a
@@ -284,6 +299,23 @@ com a folha deitada em A4, sem a animação e sem os botões — é só escolher
 *Salvar como PDF* no diálogo. Os valores não saem embaçados mesmo com o
 olho ligado.
 
+## Lembrete de compromisso
+
+Uma hora antes de cada compromisso marcado, a tela mostra um aviso com som:
+quanto falta, o que é, o paciente, o local, a observação e o Instagram dele.
+O aviso **não fecha sozinho** — nem no Esc, nem clicando fora. Ele sai com
+**Ciente**, ou com **Lembrar em 15 min** / **Lembrar em 30 min**. Há ainda
+um atalho para abrir a ficha do paciente, que esconde o aviso por 10 minutos
+e o traz de volta se a hora ainda não chegou.
+
+O som é gerado na hora, sem arquivo: três toques curtos, repetidos a cada 20
+segundos até ele dar ciente. Se o navegador bloquear áudio, o aviso aparece
+do mesmo jeito.
+
+O que foi avisado fica guardado **no navegador daquele computador**. Dar
+ciente no notebook não cala o aviso no desktop — e isso é de propósito: ele
+pode estar atendendo em outro lugar.
+
 ## Tarefas
 
 Caixa flutuante no canto, presente em todas as telas. Cada linha é uma
@@ -292,8 +324,15 @@ foi concluído fica guardado no bloco "Concluídas" até ele mandar apagar.
 O cabeçalho avisa quantas estão abertas e quantas são para hoje, e o que
 venceu aparece em vermelho.
 
-Arrasta-se pelo cabeçalho, sem sair da janela, e a posição fica lembrada
-no navegador. Minimiza com um clique no cabeçalho. Tudo é salvo no
+Cada tarefa se arrasta pelo ⋮⋮ para cima ou para baixo, e a ordem fica
+salva no servidor — vale em qualquer computador. A ordem é dele: a lista
+não se reorganiza sozinha pela data, senão arrastar não grudaria. O botão
+**↕ Ordenar por data** renumera tudo pela agenda (vencida primeiro, sem data
+no fim) quando ele quiser essa ordem de volta, e a partir daí ele arrasta
+de novo. Concluída não se arrasta.
+
+A caixa toda se arrasta pelo cabeçalho, sem sair da janela, e a posição fica
+lembrada no navegador. Minimiza com um clique no cabeçalho. Tudo é salvo no
 servidor: sobrevive a recarregar e a trocar de computador. Quem já usava
 o bloco de notas antigo não perde nada — cada linha vira uma tarefa na
 primeira vez que a tela abre.

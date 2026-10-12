@@ -111,6 +111,9 @@ $('#inSenha').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#bt
 function sair(expirou) {
   if (!expirou) api('/logout', { method: 'POST' }).catch(() => {});
   localStorage.removeItem('crm_token'); TOKEN = ''; EU = null;
+  // sem sessão não há o que lembrar, e o som não pode ficar tocando na tela de login
+  clearInterval(LEMBRETES.timer);
+  tirarLembreteDaTela();
   $('#app').classList.add('hide'); $('#login').classList.remove('hide');
   if (expirou) $('#loginErro').textContent = 'Sessão expirada. Entre novamente.';
 }
@@ -147,6 +150,7 @@ async function entrarApp() {
   PLANOS = (await api('/planos')).planos;
   await carregarObjetivos(true);
   iniciarTarefas();
+  iniciarLembretes();
   try { alternarSigilo(localStorage.getItem('crm_sigilo') === '1'); } catch { /* idem */ }
   conferirBanco();
   irPara('home');
@@ -1816,40 +1820,48 @@ function adicionarRefeicao(tipo) {
    repintar a lista — repintar perderia o que ele digitou e o cursor. */
 function listaOrdenavel(container, aoTerminar) {
   let item = null, ultimoY = 0;
+
+  /* Move/solta ficam no documento, não na pega: arrastar move o próprio nó no
+     DOM, e mover um nó solta a captura do ponteiro — o pointerup deixava de
+     chegar na pega e a ordem nova nunca era salva. */
+  const mover = (ev) => {
+    if (!item) return;
+    if (Math.abs(ev.clientY - ultimoY) < 2) return;   // tremida de mão não conta
+    const descendo = ev.clientY > ultimoY;
+    ultimoY = ev.clientY;
+    const sob = document.elementFromPoint(ev.clientX, ev.clientY);
+    const alvo = sob && sob.closest ? sob.closest('[data-ord]') : null;
+    if (!alvo || alvo === item || alvo.parentNode !== container) return;
+    // troca assim que encosta no vizinho, pelo sentido em que ele está indo:
+    // esperar passar da metade parecia travado com campos altos
+    container.insertBefore(item, descendo ? alvo.nextSibling : alvo);
+  };
+
+  const soltar = () => {
+    if (!item) return;
+    item.classList.remove('ord-mov');
+    container.classList.remove('ord-ativo');
+    item = null;
+    document.removeEventListener('pointermove', mover, true);
+    document.removeEventListener('pointerup', soltar, true);
+    document.removeEventListener('pointercancel', soltar, true);
+    if (aoTerminar) aoTerminar();
+  };
+
   $$('.ord-pega', container).forEach((pega) => {
     pega.style.touchAction = 'none';
     pega.onpointerdown = (ev) => {
-      item = pega.closest('[data-ord]');
-      if (!item) return;
+      const alvo = pega.closest('[data-ord]');
+      if (!alvo) return;
       ev.preventDefault();
-      pega.setPointerCapture(ev.pointerId);
+      item = alvo;
+      ultimoY = ev.clientY;
       item.classList.add('ord-mov');
       container.classList.add('ord-ativo');
-      ultimoY = ev.clientY;
+      document.addEventListener('pointermove', mover, true);
+      document.addEventListener('pointerup', soltar, true);
+      document.addEventListener('pointercancel', soltar, true);
     };
-    /* Troca assim que encosta no vizinho, pelo sentido em que ele está indo.
-       Esperar passar da metade do vizinho parecia travado: aqui cada campo tem
-       cabeçalho e caixa de texto, então "metade" fica a uns 200px de distância. */
-    pega.onpointermove = (ev) => {
-      if (!item) return;
-      const descendo = ev.clientY > ultimoY;
-      if (Math.abs(ev.clientY - ultimoY) < 2) return;   // tremida de mão não conta
-      ultimoY = ev.clientY;
-      const sob = document.elementFromPoint(ev.clientX, ev.clientY);
-      const alvo = sob && sob.closest ? sob.closest('[data-ord]') : null;
-      if (!alvo || alvo === item || alvo.parentNode !== container) return;
-      container.insertBefore(item, descendo ? alvo.nextSibling : alvo);
-    };
-    const soltar = (ev) => {
-      if (!item) return;
-      item.classList.remove('ord-mov');
-      container.classList.remove('ord-ativo');
-      try { pega.releasePointerCapture(ev.pointerId); } catch { /* já soltou */ }
-      item = null;
-      aoTerminar && aoTerminar();
-    };
-    pega.onpointerup = soltar;
-    pega.onpointercancel = soltar;
   });
 }
 
@@ -1859,10 +1871,16 @@ async function abrirConsulta(pacienteId, consultaId) {
   const d = await api('/pacientes/' + pacienteId);
   const p = d.paciente;
   const c = consultaId ? d.consultas.find((x) => x.id === consultaId) || {} : {};
-  const anterior = d.consultas.filter((x) => x.peso_kg && x.id !== consultaId)[0];
   REF_ATUAIS = blocosDaFicha(consultaId ? c : null);
 
   const dataFicha = c.data || hojeISO();
+  /* As três pesagens que importam na consulta: de onde ele partiu, onde
+     estava da última vez e onde está hoje. Editando uma ficha antiga, a
+     "última" é a de antes dela, não a mais recente de todas. */
+  const comPeso = d.consultas.filter((x) => x.peso_kg && x.id !== consultaId);
+  const inicial = comPeso[comPeso.length - 1];          // vêm da mais nova para a mais velha
+  const anterior = comPeso.find((x) => x.data <= dataFicha) || comPeso[0];
+  const mesmaDoInicio = !!inicial && !!anterior && inicial.id === anterior.id;
   const objetivoAtual = c.objetivo || p.objetivo || '';
   const listaObj = [...new Set([...OBJETIVOS, ...String(objetivoAtual).split(',').map((s) => s.trim())])]
     .filter(Boolean);
@@ -1880,17 +1898,31 @@ async function abrirConsulta(pacienteId, consultaId) {
         <div><label>Data</label><input id="cData" type="date" value="${esc(dataFicha)}"></div>
       </div>
 
-      <div class="grid g2" style="margin:12px 0">
-        ${campoPeso('cKg', 'cLbs', c.peso_kg ?? null)}
+      <div class="pesos">
+        <div class="pes-ref">
+          <span>Peso inicial</span>
+          <b>${inicial ? fmtPeso(inicial.peso_kg) : '—'}</b>
+          <small>${inicial ? dataBR(inicial.data) : 'esta é a primeira pesagem'}</small>
+        </div>
+        <div class="pes-ref">
+          <span>${mesmaDoInicio ? 'Também a última' : 'Última consulta'}</span>
+          <b>${anterior ? fmtPeso(anterior.peso_kg) : '—'}</b>
+          <small>${anterior ? dataBR(anterior.data) : 'sem consulta anterior'}</small>
+        </div>
+        <div class="pes-hoje">
+          <span>Peso de hoje</span>
+          <div class="grid g2" style="gap:8px">
+            ${campoPeso('cKg', 'cLbs', c.peso_kg ?? null)}
+          </div>
+        </div>
       </div>
+      <p class="pes-linha" id="cDelta"></p>
+
       <div class="grid g2" style="margin:0 0 4px">
         ${campoAltura('cAltCm', 'cAltPes', 'cAltPol', p.altura_cm ?? null)}
       </div>
       <p style="margin:0 0 12px;font-size:12px;color:var(--txt-2)">
         A altura vem do cadastro. Corrigindo aqui, o cadastro é corrigido junto ao salvar.</p>
-      ${anterior ? `<p style="margin:-4px 0 12px;font-size:13px;color:var(--txt-2)">
-        Última medição: <b>${anterior.peso_kg} kg</b> em ${dataBR(anterior.data)}
-        <span id="cDelta"></span></p>` : ''}
 
       <div class="grid g2" style="margin-bottom:12px">
         <div><label>Objetivo de agora</label>
@@ -1949,16 +1981,37 @@ async function abrirConsulta(pacienteId, consultaId) {
 
   const liberar = travarSeMexer(AVISO_SAIR('a ficha'));
 
-  function recalcular() {
-    if (anterior && $('#cDelta')) {
-      const v = Number(kg.value);
-      if (!v) $('#cDelta').textContent = '';
-      else {
-        const dd = v - anterior.peso_kg;
-        $('#cDelta').innerHTML = ` · <b style="color:${dd < 0 ? 'var(--ok)' : dd > 0 ? 'var(--alerta)' : 'var(--txt-2)'}">
-          ${dd > 0 ? '+' : ''}${dd.toFixed(1)} kg</b>`;
-      }
+  /* A diferença em kg e em %, contra a última consulta e contra o início.
+     Perder ou ganhar peso não é bom nem ruim sozinho — quem diz isso é o
+     objetivo —, então vai seta e palavra, e a cor só separa os sentidos. */
+  function pintarDiferenca() {
+    const alvo = $('#cDelta');
+    if (!alvo) return;
+    const v = Number(kg.value);
+    if (!anterior && !inicial) {
+      alvo.innerHTML = '<span class="pes-nada">Primeira pesagem deste paciente.</span>';
+      return;
     }
+    if (!v) {
+      alvo.innerHTML = '<span class="pes-nada">Preencha o peso de hoje para ver a diferença.</span>';
+      return;
+    }
+    const pedaco = (base, rot) => {
+      if (!base) return '';
+      const dd = Math.round((v - base.peso_kg) * 10) / 10;
+      if (dd === 0) return `<span class="dif igual">= mesmo peso ${rot}</span>`;
+      const pct = base.peso_kg ? Math.abs(dd / base.peso_kg) * 100 : 0;
+      return `<span class="dif ${dd < 0 ? 'baixou' : 'subiu'}">${dd < 0 ? '▼' : '▲'}
+        <b>${fmtPeso(Math.abs(dd))}</b>
+        <i>${pct.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</i>
+        ${rot}</span>`;
+    };
+    alvo.innerHTML = [pedaco(anterior, 'desde a última'),
+      mesmaDoInicio ? '' : pedaco(inicial, 'desde o início')].filter(Boolean).join('');
+  }
+
+  function recalcular() {
+    pintarDiferenca();
     // idade na DATA DA FICHA: o metabolismo muda sozinho no aniversário
     const idade = idadePor(p.nascimento, $('#cData').value || hojeISO());
     const alturaAgora = Number($('#cAltCm').value) || 0;
@@ -2526,6 +2579,10 @@ function saldoDetalhe(s) {
   const pct = s.pct.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
   return `${pct}% ${s.tipo === 'deficit' ? 'abaixo' : 'acima'} do gasto energético.`;
 }
+
+// "92,4 kg" — sem casa decimal quando é redondo, que é como ele escreve
+const fmtPeso = (v) => (v == null || v === '' ? '—'
+  : Number(v).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' kg');
 
 const kcal = (v) => Math.round(v * 100) / 100;
 const fmtKcal = (v) => v == null ? '—'
@@ -3734,6 +3791,153 @@ function horaNoFuso(fuso) {
   } catch { return '—'; }
 }
 
+/* ==========================================================
+   LEMBRETE DE COMPROMISSO
+   Uma hora antes, a tela avisa com som e não sai sozinha: o Luca precisa
+   dar ciente ou adiar. Quem lembra do que foi avisado é o navegador deste
+   computador — adiar numa máquina não cala o aviso na outra, e isso é o
+   certo: ele pode estar atendendo em outro lugar.
+   ========================================================== */
+const LEMBRETE_MIN = 60;          // quanto antes o aviso aparece
+let LEMBRETES = { timer: null, naTela: null, tocando: null };
+
+function lembretesVistos() {
+  try { return JSON.parse(localStorage.getItem('crm_lembretes') || '{}'); }
+  catch { return {}; }
+}
+function guardarLembrete(id, ate) {
+  const o = lembretesVistos();
+  o[id] = ate;
+  // limpa o que já passou, senão o registro cresce para sempre
+  const agora = Date.now();
+  Object.keys(o).forEach((k) => { if (o[k] < agora - 86400000) delete o[k]; });
+  try { localStorage.setItem('crm_lembretes', JSON.stringify(o)); } catch { /* ignora */ }
+}
+
+function iniciarLembretes() {
+  clearInterval(LEMBRETES.timer);
+  verLembretes();
+  LEMBRETES.timer = setInterval(verLembretes, 30000);
+}
+
+async function verLembretes() {
+  if (!TOKEN || LEMBRETES.naTela) return;          // já tem um na tela: um de cada vez
+  const h = hojeISO();
+  let lista;
+  try {
+    lista = (await api(`/compromissos?de=${h}&ate=${addDiasISO(h, 1)}`)).compromissos || [];
+  } catch { return; }
+
+  const agora = Date.now();
+  const vistos = lembretesVistos();
+  const candidato = lista
+    .filter((c) => c.status === 'marcado' && c.inicio)
+    .map((c) => ({ ...c, quando: new Date(c.inicio).getTime() }))
+    .filter((c) => {
+      if (!c.quando) return false;
+      if (c.quando < agora - 5 * 60000) return false;          // já passou faz tempo
+      if (c.quando - agora > LEMBRETE_MIN * 60000) return false; // ainda falta muito
+      return !(vistos[c.id] > agora);                           // adiado ou com ciente
+    })
+    .sort((a, b) => a.quando - b.quando)[0];
+
+  if (candidato) mostrarLembrete(candidato);
+}
+
+function mostrarLembrete(c) {
+  LEMBRETES.naTela = c.id;
+  const faltam = Math.round((new Date(c.inicio).getTime() - Date.now()) / 60000);
+  const quem = c.paciente_apelido || c.paciente_nome;
+  const arroba = perfilInsta(c.paciente_instagram);
+
+  const tela = document.createElement('div');
+  tela.className = 'lembrete';
+  tela.id = 'lembreteAtual';
+  tela.innerHTML = `
+    <div class="lb-caixa" role="alertdialog" aria-labelledby="lbTit">
+      <div class="lb-sino" aria-hidden="true">🔔</div>
+      <p class="lb-quando">${faltam <= 0 ? 'Começa agora' : `Em ${faltam} minuto${faltam === 1 ? '' : 's'}`}</p>
+      <h2 id="lbTit">${esc(c.titulo)}</h2>
+      <p class="lb-info">
+        <b>${horaBR(c.inicio)}</b> · ${dataBR(c.inicio)}
+        ${quem ? ` · ${esc(quem)}` : ''}${c.local ? ` · ${esc(c.local)}` : ''}</p>
+      ${arroba ? `<p class="lb-info"><a href="${arroba.url}" target="_blank" rel="noopener">↗ ${esc(arroba.arroba)}</a></p>` : ''}
+      ${c.obs ? `<p class="lb-obs">${esc(c.obs)}</p>` : ''}
+      <div class="lb-botoes">
+        <button class="btn ghost" onclick="adiarLembrete(15)">Lembrar em 15 min</button>
+        <button class="btn ghost" onclick="adiarLembrete(30)">Lembrar em 30 min</button>
+        <button class="btn ouro" id="lbOk">Ciente</button>
+      </div>
+      ${c.paciente_id ? `<button class="lb-ficha" onclick="abrirFichaDoLembrete(${c.paciente_id})">Abrir a ficha do paciente</button>` : ''}
+    </div>`;
+  document.body.appendChild(tela);
+  requestAnimationFrame(() => tela.classList.add('entrou'));
+  $('#lbOk').focus();
+  $('#lbOk').onclick = () => fecharLembrete(c.inicio);
+  tocarAviso();
+}
+
+/* Som feito na hora, sem arquivo: três toques curtos que dá para ouvir da
+   cozinha sem assustar quem está na sala. Repete até ele dar ciente, mas
+   com intervalo grande — alarme insistente vira ruído e ele desliga o som. */
+function tocarAviso() {
+  const toque = () => {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      if (ctx.state === 'suspended') ctx.resume();
+      [0, 0.18, 0.36].forEach((atraso, i) => {
+        const osc = ctx.createOscillator();
+        const vol = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = [880, 1046.5, 1318.5][i];
+        vol.gain.setValueAtTime(0.0001, ctx.currentTime + atraso);
+        vol.gain.exponentialRampToValueAtTime(0.22, ctx.currentTime + atraso + 0.02);
+        vol.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + atraso + 0.16);
+        osc.connect(vol).connect(ctx.destination);
+        osc.start(ctx.currentTime + atraso);
+        osc.stop(ctx.currentTime + atraso + 0.2);
+      });
+      setTimeout(() => ctx.close().catch(() => {}), 1200);
+    } catch (e) { /* navegador sem permissão de som: o popup já avisa */ }
+  };
+  toque();
+  clearInterval(LEMBRETES.tocando);
+  LEMBRETES.tocando = setInterval(toque, 20000);
+}
+
+function pararAviso() {
+  clearInterval(LEMBRETES.tocando);
+  LEMBRETES.tocando = null;
+}
+
+function tirarLembreteDaTela() {
+  pararAviso();
+  const t = $('#lembreteAtual');
+  if (t) { t.classList.remove('entrou'); setTimeout(() => t.remove(), 180); }
+  LEMBRETES.naTela = null;
+}
+
+// ciente: não avisa mais desse compromisso
+function fecharLembrete(inicio) {
+  guardarLembrete(LEMBRETES.naTela, new Date(inicio).getTime() + 86400000);
+  tirarLembreteDaTela();
+}
+
+function adiarLembrete(min) {
+  guardarLembrete(LEMBRETES.naTela, Date.now() + min * 60000);
+  toast(`Aviso adiado para daqui a ${min} minutos`);
+  tirarLembreteDaTela();
+}
+
+function abrirFichaDoLembrete(pid) {
+  // some agora para ele ver a ficha, e volta em 10 min se o horário não chegou
+  guardarLembrete(LEMBRETES.naTela, Date.now() + 10 * 60000);
+  tirarLembreteDaTela();
+  abrirPaciente(pid);
+}
+
 /* ---------- tarefas: a listinha que acompanha o Luca em todas as telas ---------- */
 let TAREFAS = { abertas: [], feitas: [], total_feitas: 0 };
 let MOSTRAR_FEITAS = false;
@@ -3869,8 +4073,10 @@ function pintarTarefas() {
 
   const linha = (t) => {
     const q = quandoLegivel(t);
+    // só a lista das abertas se arrasta: reordenar o que já foi feito não serve
     return `
-      <li class="tf-item${t.feita ? ' feita' : ''}" data-id="${t.id}">
+      <li class="tf-item${t.feita ? ' feita' : ''}" data-id="${t.id}"${t.feita ? '' : ' data-ord'}>
+        ${t.feita ? '' : '<span class="ord-pega" title="Arraste para mudar a ordem">⋮⋮</span>'}
         <button class="tf-check" onclick="marcarTarefa(${t.id},${t.feita ? 0 : 1})"
           aria-label="${t.feita ? 'Reabrir' : 'Concluir'} ${esc(t.texto)}">${t.feita ? '✓' : ''}</button>
         <div class="tf-txt">
@@ -3884,6 +4090,8 @@ function pintarTarefas() {
   $('#tfLista').innerHTML = !abertas.length
     ? '<li class="tf-vazio">Nenhuma tarefa aberta.</li>'
     : abertas.map(linha).join('');
+  listaOrdenavel($('#tfLista'), salvarOrdemTarefas);
+  $('#tfPorData').classList.toggle('hide', abertas.length < 2);
 
   const feitas = TAREFAS.feitas;
   $('#tfFeitasCab').classList.toggle('hide', !TAREFAS.total_feitas);
@@ -3892,6 +4100,24 @@ function pintarTarefas() {
   $('#tfFeitas').classList.toggle('hide', !MOSTRAR_FEITAS || !feitas.length);
   $('#tfFeitas').innerHTML = feitas.map(linha).join('');
   $('#tfLimpar').classList.toggle('hide', !MOSTRAR_FEITAS || !TAREFAS.total_feitas);
+}
+
+/* Guarda a ordem que ele arrastou. A lista é curta, então manda os ids
+   inteiros: é mais simples e não erra se dois arrastes vierem juntos. */
+async function salvarOrdemTarefas() {
+  const ids = $$('#tfLista .tf-item[data-id]').map((el) => Number(el.dataset.id));
+  if (!ids.length) return;
+  TAREFAS.abertas = ids.map((id) => TAREFAS.abertas.find((t) => t.id === id))
+    .filter(Boolean);
+  try { await api('/tarefas/ordem', { method: 'POST', body: { ids } }); }
+  catch (e) { toast(e.message); carregarTarefas(); }
+}
+
+async function ordenarTarefasPorData() {
+  try { await api('/tarefas/por-data', { method: 'POST', body: {} }); }
+  catch (e) { return toast(e.message); }
+  toast('Tarefas na ordem da agenda');
+  carregarTarefas();
 }
 
 function alternarFeitas() { MOSTRAR_FEITAS = !MOSTRAR_FEITAS; pintarTarefas(); }
