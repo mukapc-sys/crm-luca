@@ -41,7 +41,7 @@ label{display:block;font-size:12px;font-weight:600;color:var(--txt-2);margin:0 0
 
 /* ---------- layout ---------- */
 #app{display:grid;grid-template-columns:232px 1fr;min-height:100vh}
-aside{background:var(--navy);color:#fff;padding:18px 12px;position:sticky;top:0;height:100vh;overflow:auto}
+aside{background:var(--navy);color:#fff;padding:18px 12px;position:sticky;top:0;height:100vh;overflow:hidden}
 .marca{display:flex;align-items:center;gap:10px;padding:0 6px 16px;border-bottom:1px solid rgba(255,255,255,.12);margin-bottom:12px}
 .marca div:first-child{width:38px;height:38px;border-radius:10px;background:rgba(201,162,39,.16);
   display:grid;place-items:center;flex:none}
@@ -150,6 +150,47 @@ tbody tr:hover{background:#FAFCFE}
   .viz-trilho{grid-column:1/-1}
 }
 
+
+/* ---------- relógios na coluna da esquerda ----------
+   Ocupam o que sobra da coluna: o aside vira uma coluna flex e esta lista é a
+   única que estica e rola. Dois níveis por lugar — nome em cima, hora embaixo. */
+aside{display:flex;flex-direction:column}
+aside > nav{flex:none}
+#relogios{flex:1;min-height:0;overflow:auto;margin-top:14px;padding-top:12px;
+  border-top:1px solid rgba(255,255,255,.13)}
+#relogios > div{padding:7px 2px;border-bottom:1px solid rgba(255,255,255,.07)}
+#relogios > div:last-child{border-bottom:0}
+#relogios .rl-lugar{display:block;font-size:11px;font-weight:600;color:#97A9BC;
+  text-transform:uppercase;letter-spacing:.05em;line-height:1.3;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#relogios .rl-hora{display:block;font-size:17px;font-weight:650;color:#fff;
+  letter-spacing:-.01em;line-height:1.25;font-variant-numeric:tabular-nums}
+#relogios .rl-hora small{font-size:11px;font-weight:500;color:#8FA3B8;margin-left:5px;
+  letter-spacing:0}
+#relogios > div.aqui .rl-lugar{color:var(--ouro)}
+#relogios > div.dormindo .rl-hora{color:#8FA3B8}
+@media(max-width:900px){#relogios{display:none}}
+
+/* ---------- estrela de favorito do plano ---------- */
+.estrela{background:none;border:0;padding:0 5px 0 0;font-size:16px;line-height:1;cursor:pointer;
+  color:#C3CCD6;vertical-align:-1px}
+.estrela:hover{color:#C9A227}
+.estrela.on{color:#D9A800}
+.estrela:focus-visible{outline:2px solid var(--navy-3);outline-offset:2px;border-radius:4px}
+
+/* ---------- alertas alimentares ----------
+   Vermelho com ícone e texto: a cor chama, o "!" e a palavra é que informam. */
+.alertas{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin:0 0 12px}
+.alerta{display:inline-flex;align-items:center;gap:6px;background:#FCECE9;color:#8E2217;
+  border:1px solid #F0C3BC;border-radius:8px;padding:4px 10px;font-size:12.5px;font-weight:600;
+  line-height:1.35;max-width:100%}
+.alerta i{flex:none;width:16px;height:16px;border-radius:50%;background:#C0392B;color:#fff;
+  font-style:normal;font-size:11px;font-weight:800;display:grid;place-items:center}
+.alerta-add{background:none;border:1px dashed var(--linha);color:var(--txt-2);font-size:12px;
+  padding:4px 9px;border-radius:8px;cursor:pointer}
+.alerta-add:hover{border-color:var(--erro);color:var(--erro)}
+.caderno .alertas{margin:8px 0 0}
+@media print{.alerta{background:#fff;border:1.5px solid #8E2217}}
 
 /* ---------- as três pesagens da ficha ---------- */
 .pesos{display:grid;grid-template-columns:1fr 1fr 2fr;gap:10px;align-items:start;margin:12px 0 0}
@@ -595,6 +636,7 @@ body.apresentando{overflow:hidden}
     <button class="btn ghost mini" id="olho" style="margin-top:14px;width:100%"
             title="Ocultar os valores da tela">👁 Ocultar valores</button>
     <button class="btn ghost mini" id="btnSair" style="margin-top:8px;width:100%">Sair</button>
+    <div id="relogios" aria-label="Horário nos lugares que ele atende"></div>
   </aside>
   <main>
     <div id="avisoBanco" class="aviso-banco hide"></div>

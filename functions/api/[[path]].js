@@ -82,6 +82,49 @@ const SIMBOLO = { BRL: 'R$', USD: 'US$', GBP: '£', EUR: '€' };
 const dataBR = (d) => (!d ? '' : String(d).slice(0, 10).split('-').reverse().join('/'));
 const MOEDA_POR_FORMA = { pix: 'BRL', asaas: 'BRL', infinity: 'BRL', zelle: 'USD', paypal: 'USD' };
 
+/* ---------- alertas do paciente ----------
+   O que não pode passar batido na consulta: alergia, intolerância, alimento
+   que ele não come. Vem de duas fontes — as perguntas que o Luca marcou como
+   alerta no formulário e o campo que ele mesmo escreve na ficha.
+
+   As respostas antigas foram gravadas com o texto da pergunta como chave, e
+   esse texto mudou de redação ao longo do tempo. Por isso casa tanto pelo
+   rótulo atual das perguntas marcadas quanto por um padrão de palavras. */
+const PADRAO_ALERTA = /restri|alerg|intoler|evitar|n[ãa]o\s*(come|gosta|pode)|lactose|gl[úu]ten/i;
+const NAO_E_RESPOSTA = /^(n[ãa]o|nao|nenhum[ao]?|nada|no|none|n\/?a|-+|\.+|0|sem)$/i;
+
+async function alertasDoPaciente(env, pid) {
+  const fora = [];
+  const p = await talvez(() => env.DB.prepare(
+    'SELECT alertas FROM pacientes WHERE id=?').bind(pid).first(), null);
+  // os que o Luca digitou à mão vêm primeiro: são os que ele ouviu na consulta
+  String((p && p.alertas) || '').split('\n').map((x) => x.trim()).filter(Boolean)
+    .forEach((texto) => fora.push({ texto, de: 'luca' }));
+
+  const ana = await talvez(() => env.DB.prepare(
+    'SELECT dados FROM anamneses WHERE paciente_id=? ORDER BY id DESC LIMIT 1')
+    .bind(pid).first(), null);
+  if (!ana) return fora;
+  let dados = {};
+  try { dados = JSON.parse(ana.dados || '{}'); } catch { dados = {}; }
+
+  const marcadas = await talvez(() => env.DB.prepare(
+    'SELECT rot_pt, rot_en, rot_es FROM form_campos WHERE alerta=1').all(), { results: [] });
+  const rotulos = (marcadas.results || [])
+    .flatMap((c) => [c.rot_pt, c.rot_en, c.rot_es])
+    .filter(Boolean)
+    .map((r) => String(r).trim().toLowerCase());
+
+  for (const [pergunta, resposta] of Object.entries(dados)) {
+    const txt = String(resposta == null ? '' : resposta).trim();
+    if (!txt || NAO_E_RESPOSTA.test(txt) || txt === 'nan') continue;
+    const q = String(pergunta).trim().toLowerCase();
+    if (!rotulos.includes(q) && !PADRAO_ALERTA.test(q)) continue;
+    fora.push({ texto: txt.slice(0, 220), de: 'formulario', pergunta: String(pergunta) });
+  }
+  return fora;
+}
+
 /* ---------- de onde vem a cotação ----------
    A AwesomeAPI passou a limitar por cota e responde 429; quando isso
    acontece o painel não pode ficar sem câmbio, então são várias fontes na
@@ -1406,13 +1449,15 @@ export async function onRequest(context) {
       }
       for (const c of campos) {
         if (!c.chave) continue;
-        await env.DB.prepare(
-          `UPDATE form_campos SET rot_pt=?,rot_en=?,rot_es=?,dica_pt=?,dica_en=?,dica_es=?,
-             opcoes_pt=?,opcoes_en=?,opcoes_es=?,obrigatorio=?,ativo=?,posicao=? WHERE chave=?`)
-          .bind(c.rot_pt || '', c.rot_en || '', c.rot_es || '',
-            c.dica_pt || '', c.dica_en || '', c.dica_es || '',
-            c.opcoes_pt || '', c.opcoes_en || '', c.opcoes_es || '',
-            c.obrigatorio ? 1 : 0, c.ativo ? 1 : 0, Number(c.posicao) || 0, c.chave).run();
+        const vals = [c.rot_pt || '', c.rot_en || '', c.rot_es || '',
+          c.dica_pt || '', c.dica_en || '', c.dica_es || '',
+          c.opcoes_pt || '', c.opcoes_en || '', c.opcoes_es || '',
+          c.obrigatorio ? 1 : 0, c.ativo ? 1 : 0, Number(c.posicao) || 0];
+        const BASE = `UPDATE form_campos SET rot_pt=?,rot_en=?,rot_es=?,dica_pt=?,dica_en=?,dica_es=?,
+             opcoes_pt=?,opcoes_en=?,opcoes_es=?,obrigatorio=?,ativo=?,posicao=?`;
+        const feito = await talvez(() => env.DB.prepare(`${BASE},alerta=? WHERE chave=?`)
+          .bind(...vals, c.alerta ? 1 : 0, c.chave).run(), null);
+        if (!feito) await env.DB.prepare(`${BASE} WHERE chave=?`).bind(...vals, c.chave).run();
       }
       return json({ ok: true, blocos: blocos.length, campos: campos.length });
     }
@@ -1580,7 +1625,10 @@ export async function onRequest(context) {
     }
 
     if (rota === '/planos' && metodo === 'GET') {
-      const r = await env.DB.prepare('SELECT * FROM planos ORDER BY posicao, codigo').all();
+      // favorito primeiro: é o que ele vende todo dia e procura antes dos outros
+      const r = await talvez(() => env.DB.prepare(
+        'SELECT * FROM planos ORDER BY favorito DESC, posicao, codigo').all(), null)
+        || await env.DB.prepare('SELECT * FROM planos ORDER BY posicao, codigo').all();
       return json({ planos: r.results || [] });
     }
     if (rota === '/planos' && metodo === 'POST') {
@@ -1594,7 +1642,17 @@ export async function onRequest(context) {
         b.renova_auto ? 1 : 0, b.regras || null, b.ativo === 0 ? 0 : 1, Number(b.posicao || 99)).run();
       return json({ ok: true });
     }
-    if (rota.startsWith('/planos/') && metodo === 'PUT') {
+    /* Estrela do plano. Rota própria porque é um clique na lista, e mandar o
+       cadastro inteiro só para marcar favorito arriscaria sobrescrever preço. */
+    if (rota.startsWith('/planos/') && seg[2] === 'favorito' && metodo === 'POST') {
+      const r = await talvez(() => env.DB.prepare(
+        'UPDATE planos SET favorito=? WHERE id=?')
+        .bind(body.favorito ? 1 : 0, seg[1]).run(), null);
+      if (!r) return bad('Falta rodar a migração 10 no banco.', 409);
+      return json({ ok: true, favorito: body.favorito ? 1 : 0 });
+    }
+
+    if (rota.startsWith('/planos/') && seg.length === 2 && metodo === 'PUT') {
       const id = seg[1];
       const b = body;
       await env.DB.prepare(
@@ -1605,7 +1663,7 @@ export async function onRequest(context) {
         b.regras || null, b.ativo === 0 ? 0 : 1, Number(b.posicao || 99), id).run();
       return json({ ok: true });
     }
-    if (rota.startsWith('/planos/') && metodo === 'DELETE') {
+    if (rota.startsWith('/planos/') && seg.length === 2 && metodo === 'DELETE') {
       await env.DB.prepare('DELETE FROM planos WHERE id=?').bind(seg[1]).run();
       return json({ ok: true });
     }
@@ -1708,6 +1766,7 @@ export async function onRequest(context) {
            FROM anexos WHERE paciente_id=? ORDER BY data_ref DESC, id DESC`).bind(id).all(), null);
       return json({
         paciente: p,
+        alertas: await alertasDoPaciente(env, id),
         contratos: contratos.results || [],
         parcelas: parcelas.results || [],
         pagamentos: pagamentos.results || [],
@@ -1739,6 +1798,9 @@ export async function onRequest(context) {
         'UPDATE pacientes SET dieta_kcal=? WHERE id=?')
         .bind(b.dieta_kcal === '' || b.dieta_kcal == null ? null : num(b.dieta_kcal), id)
         .run(), null);
+      if (b.alertas !== undefined) await talvez(() => env.DB.prepare(
+        'UPDATE pacientes SET alertas=? WHERE id=?')
+        .bind(String(b.alertas || '').trim().slice(0, 1000) || null, id).run(), null);
       return json({ ok: true, fuso });
     }
 

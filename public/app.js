@@ -113,6 +113,7 @@ function sair(expirou) {
   localStorage.removeItem('crm_token'); TOKEN = ''; EU = null;
   // sem sessão não há o que lembrar, e o som não pode ficar tocando na tela de login
   clearInterval(LEMBRETES.timer);
+  clearInterval(RELOGIO_TIMER);
   tirarLembreteDaTela();
   $('#app').classList.add('hide'); $('#login').classList.remove('hide');
   if (expirou) $('#loginErro').textContent = 'Sessão expirada. Entre novamente.';
@@ -151,6 +152,7 @@ async function entrarApp() {
   await carregarObjetivos(true);
   iniciarTarefas();
   iniciarLembretes();
+  iniciarRelogios();
   try { alternarSigilo(localStorage.getItem('crm_sigilo') === '1'); } catch { /* idem */ }
   conferirBanco();
   irPara('home');
@@ -1332,6 +1334,49 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') fecharModa
 /* Energia do paciente na visão geral: TMB e gasto da última ficha, a dieta
    prescrita agora e o saldo entre as duas. A dieta se edita aqui mesmo —
    ele mexe no plano alimentar sem precisar abrir uma consulta. */
+/* ---------- alertas alimentares ----------
+   O que não pode passar batido: alergia, intolerância, o que ele não come.
+   Fica em vermelho ao lado do nome, na ficha do paciente e na de consulta. */
+function faixaAlertas(alertas, pacienteId) {
+  const l = (alertas || []).filter((a) => a && a.texto);
+  if (!l.length) {
+    return pacienteId ? `<button class="alerta-add" onclick="editarAlertas(${pacienteId})"
+      title="Anotar alergia, intolerância ou alimento que ele não come">+ alerta alimentar</button>` : '';
+  }
+  return `<div class="alertas">
+    ${l.map((a) => `<span class="alerta" title="${esc(a.pergunta || 'anotado por você')}">
+      <i aria-hidden="true">!</i>${esc(a.texto)}</span>`).join('')}
+    ${pacienteId ? `<button class="alerta-add" onclick="editarAlertas(${pacienteId})"
+      title="Anotar mais um">editar</button>` : ''}
+  </div>`;
+}
+
+/* Os do formulário vêm da anamnese e não se editam aqui — isso apagaria o que
+   o paciente respondeu. Este campo é o que o Luca ouve na consulta. */
+async function editarAlertas(pacienteId) {
+  let p;
+  try { p = (await api('/pacientes/' + pacienteId)).paciente; } catch (e) { return toast(e.message); }
+  modal('Alertas alimentares', `
+    <p class="dica">Um por linha. Aparecem em vermelho no topo da ficha e da
+      consulta, junto com o que o paciente respondeu no formulário.</p>
+    <textarea id="alTexto" style="min-height:110px"
+      placeholder="alergia a frutos do mar&#10;não come lactose&#10;detesta beterraba">${esc(p.alertas || '')}</textarea>`, `
+    <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
+    <button class="btn ouro" id="alSalvar">Salvar</button>`, { empilhar: true });
+  const liberar = travarSeMexer(AVISO_SAIR('os alertas'));
+  $('#alSalvar').onclick = async () => {
+    try {
+      await api('/pacientes/' + pacienteId, { method: 'PUT',
+        body: { ...p, alertas: $('#alTexto').value } });
+    } catch (e) { return toast(e.message); }
+    liberar();
+    fecharModal(true);
+    toast('Alertas salvos');
+    CACHE.pacientes = null;
+    abrirPaciente(pacienteId);
+  };
+}
+
 function blocoEnergia(p, ficha) {
   const tmb = ficha && ficha.tmb ? Number(ficha.tmb) : null;
   const get = ficha && ficha.get_kcal ? Number(ficha.get_kcal) : null;
@@ -1405,6 +1450,8 @@ async function abrirPaciente(id, aba) {
   const dif = primeiro && ultimo ? (ultimo - primeiro) : null;
 
   const corpo = `
+    ${faixaAlertas(d.alertas, p.id)}
+
     <div class="abas" id="abasPac">
       <button class="on" data-a="visao">Visão geral</button>
       <button data-a="consultas">Consultas (${d.consultas.length})</button>
@@ -1922,6 +1969,7 @@ async function abrirConsulta(pacienteId, consultaId) {
           <div style="font-size:17px;font-weight:650">${esc(p.nome)}
             ${p.apelido ? `<span class="apelido">“${esc(p.apelido)}”</span>` : ''}</div>
           <div style="margin-top:4px">${p.cod ? `<span class="cod">COD ${esc(p.cod)}</span>` : ''}</div>
+          ${faixaAlertas(d.alertas, null)}
         </div>
         <div><label>Data</label><input id="cData" type="date" value="${esc(dataFicha)}"></div>
       </div>
@@ -2120,6 +2168,7 @@ function calculadoraDaFicha(pacienteId) {
     peso: $('#cKg') ? $('#cKg').value : '',
     fator: $('#cFator') ? $('#cFator').value : '',
     data: $('#cData') ? $('#cData').value : '',
+    dieta: $('#cDieta') ? $('#cDieta').value : '',
   });
 }
 
@@ -2440,7 +2489,9 @@ async function abrirCompromisso(id, dia) {
         ${buscaPaciente('mPac', c.paciente_id)}
         <small style="display:block;font-size:12px;color:var(--txt-2);margin-top:4px">
           Digite o COD, o nome ou o apelido.</small></div>
-      <div><label>Data e hora</label><input id="mIni" type="datetime-local" value="${esc((c.inicio || '').slice(0, 16))}"></div>
+      <div><label>Data e hora</label><input id="mIni" type="datetime-local" value="${esc((c.inicio || '').slice(0, 16))}">
+        <small id="mDiaSemana" style="display:block;font-size:12.5px;font-weight:600;
+          color:var(--navy-3);margin-top:4px"></small></div>
       <div><label>Local / link</label><input id="mLocal" value="${esc(c.local || '')}"></div>
       <div><label>Situação</label><select id="mSt">
         ${['marcado', 'feito', 'cancelado'].map((s) => `<option value="${s}"${c.status === s ? ' selected' : ''}>${ROTULO_COMPROMISSO[s]}</option>`).join('')}</select></div>
@@ -2461,6 +2512,27 @@ async function abrirCompromisso(id, dia) {
     b.classList.toggle('hide', !pid);
     b.onclick = () => { if (fecharModal()) abrirPaciente(Number(pid)); };
   };
+  /* O dia da semana da data escolhida. Ele marca pensando em "quinta de
+     manhã", não em "15/10" — ver o nome do dia evita marcar no sábado. */
+  const mostrarDiaSemana = () => {
+    const v = $('#mIni').value;
+    const alvo = $('#mDiaSemana');
+    if (!alvo) return;
+    if (!v || v.length < 10) { alvo.textContent = ''; return; }
+    const d = new Date(v.slice(0, 10) + 'T12:00:00');
+    if (isNaN(d)) { alvo.textContent = ''; return; }
+    const nome = d.toLocaleDateString('pt-BR', { weekday: 'long' });
+    const hoje = hojeISO();
+    const quando = v.slice(0, 10) === hoje ? ' · hoje'
+      : v.slice(0, 10) === addDiasISO(hoje, 1) ? ' · amanhã'
+      : v.slice(0, 10) < hoje ? ' · já passou' : '';
+    alvo.textContent = nome.charAt(0).toUpperCase() + nome.slice(1) + quando;
+    alvo.style.color = v.slice(0, 10) < hoje ? 'var(--erro)' : 'var(--navy-3)';
+  };
+  $('#mIni').oninput = mostrarDiaSemana;
+  $('#mIni').onchange = mostrarDiaSemana;
+  mostrarDiaSemana();
+
   ligarBuscaPaciente('mPac', (p) => ajustarFicha(p && p.id));
   ajustarFicha(c.paciente_id);
   const liberarComp = travarSeMexer(AVISO_SAIR('o compromisso'));
@@ -2666,6 +2738,19 @@ async function abrirCalculadora(pacienteId, de = {}) {
         <small id="kGetSub" style="color:var(--txt-2)">TMB × fator de atividade</small></div>
     </div>
 
+    <div class="grid g2" style="margin-top:12px">
+      <div><label>Calorias da dieta (kcal/dia)</label>
+        <input id="kDieta" type="number" step="1" min="0" value="${
+          de.dieta != null && de.dieta !== '' ? esc(de.dieta) : (p && p.dieta_kcal) || ''}">
+        <small style="display:block;font-size:12px;color:var(--txt-2);margin-top:4px">
+          O que a dieta montada entrega por dia.</small></div>
+      <div class="saldo" id="kBlocoSaldo">
+        <span>Saldo calórico</span>
+        <b id="kSaldo">—</b>
+        <small id="kSaldoDet">Preencha as calorias da dieta ao lado.</small>
+      </div>
+    </div>
+
     <div id="kAjuste" class="card hide" style="margin-top:12px">
       <label>Ajuste para o objetivo</label>
       <div class="viz-barras" style="margin-top:6px"></div>
@@ -2704,6 +2789,8 @@ async function abrirCalculadora(pacienteId, de = {}) {
     el('kGetSub').textContent = get == null ? 'TMB × fator de atividade'
       : `${fmtKcal(kcal(tmb))} × ${fator}`;
 
+    pintarSaldoCalc(get);
+
     const box = $('#kAjuste');
     if (get == null) { box.classList.add('hide'); return; }
     box.classList.remove('hide');
@@ -2723,8 +2810,19 @@ async function abrirCalculadora(pacienteId, de = {}) {
       </div>`).join('');
   }
 
+  /* Mesma conta da ficha de consulta: dieta menos gasto, em kcal e em %. */
+  function pintarSaldoCalc(get) {
+    const sa = saldoCalorico($('#kDieta').value, get);
+    $('#kBlocoSaldo').dataset.tipo = sa ? sa.tipo : '';
+    $('#kSaldo').innerHTML = sa ? `<i>${SETA_SALDO[sa.tipo]}</i> ${esc(saldoLegivel(sa))}` : '—';
+    $('#kSaldoDet').textContent = sa ? saldoDetalhe(sa)
+      : get ? 'Preencha as calorias da dieta ao lado.'
+      : 'Falta o gasto energético — preencha peso, altura e idade.';
+  }
+
   ligarPeso('kKg', 'kLb', calcular);
   ligarAltura('kCm', 'kPes', 'kPol', calcular);
+  el('kDieta').oninput = calcular;
   el('kIdade').oninput = calcular;
   el('kNivel').onchange = calcular;
   el('kSexo').onchange = () => { montaNiveis(); calcular(); };
@@ -2738,14 +2836,16 @@ async function abrirCalculadora(pacienteId, de = {}) {
 
   // devolve peso e nível para a ficha e volta para ela
   if (de.empilhar) $('#kUsar').onclick = () => {
-    const peso = el('kKg').value, nivel = el('kNivel').value;
+    const peso = el('kKg').value, nivel = el('kNivel').value, dieta = el('kDieta').value;
     if (!fecharModal()) return;
-    const kg = $('#cKg'), fator = $('#cFator');
+    const kg = $('#cKg'), fator = $('#cFator'), cd = $('#cDieta');
     if (kg && peso) { kg.value = peso; kg.dispatchEvent(new Event('input')); }
     if (fator && [...fator.options].some((o) => o.value === nivel)) {
       fator.value = nivel; fator.dispatchEvent(new Event('change'));
     }
-    toast('Peso e nível levados para a ficha');
+    // ele costuma achar a caloria da dieta aqui, olhando o ajuste por objetivo
+    if (cd && cd.value !== dieta) { cd.value = dieta; cd.dispatchEvent(new Event('input')); }
+    toast('Peso, nível e calorias levados para a ficha');
   };
 
   if (p) $('#kSalvar').onclick = async () => {
@@ -3002,6 +3102,8 @@ async function telaPlanos() {
   const renov = {};
   (d.renovacao || []).forEach((r) => { renov[r.plano] = r; });
 
+  // favorito primeiro já vem do servidor; aqui é só o filtro da tela
+  const listaPlanos = SO_FAVORITOS ? PLANOS.filter((x) => x.favorito) : PLANOS;
   const semPreco = PLANOS.filter((p) => p.ativo && !p.preco_brl && !p.preco_usd);
   const maxRec = Math.max(1, ...Object.values(recebido));
   const totalRec = Object.values(recebido).reduce((a, b) => a + b, 0);
@@ -3016,7 +3118,11 @@ async function telaPlanos() {
   $('#tela').innerHTML = `
     <div class="topo">
       <div><h1>Planos</h1><p>O que cada plano cobra, o que entrega e quanto traz</p></div>
-      <div class="dir"><button class="btn ouro" onclick="formPlano()">+ Plano</button></div>
+      <div class="dir">
+        <button class="btn ${SO_FAVORITOS ? '' : 'ghost'}" id="plFav"
+          onclick="SO_FAVORITOS=!SO_FAVORITOS;telaPlanos()">★ Só favoritos</button>
+        <button class="btn ouro" onclick="formPlano()">+ Plano</button>
+      </div>
     </div>
 
     ${semPreco.length ? `<div class="card" style="background:#FBF0D6;border-color:#E4C25C;margin-bottom:14px">
@@ -3054,14 +3160,19 @@ async function telaPlanos() {
       <h3 style="padding:16px 16px 4px">Cadastro</h3>
       <p style="font-size:12.5px;color:var(--txt-2);margin:0;padding:0 16px 10px">
         O preço entra sozinho no contrato e continua editável caso a caso.</p>
+      ${!listaPlanos.length ? '<p class="vazio">Nenhum plano favorito ainda. Clique na estrela de um plano para marcá-lo.</p>' : `
       <table><thead><tr>
         <th>Plano</th><th>Duração</th><th>Preço BR</th><th>Preço EUA</th>
         <th>Inclui</th><th>Ativos</th><th>Vendidos 12m</th><th>Renovação</th><th></th></tr></thead><tbody>
-      ${PLANOS.map((p) => {
+      ${listaPlanos.map((p) => {
         const r = renov[p.codigo];
         const totRen = r ? r.renovou + r.saiu : 0;
         return `<tr style="${p.ativo ? '' : 'opacity:.5'}">
-        <td><span class="cod">${esc(p.codigo)}</span> <b>${esc(p.nome)}</b>
+        <td><button class="estrela${p.favorito ? ' on' : ''}" onclick="alternarFavorito(${p.id})"
+            title="${p.favorito ? 'Tirar dos favoritos' : 'Marcar como favorito'}"
+            aria-pressed="${p.favorito ? 'true' : 'false'}"
+            aria-label="${p.favorito ? 'Favorito' : 'Marcar favorito'}">${p.favorito ? '★' : '☆'}</button>
+          <span class="cod">${esc(p.codigo)}</span> <b>${esc(p.nome)}</b>
           ${p.regras ? `<br><small style="color:var(--txt-2)">${esc(p.regras.slice(0, 64))}</small>` : ''}
           <br><small style="color:var(--txt-2)">${{ dieta: 'Dieta', treino: 'Treino',
             dieta_treino: 'Dieta + Treino', le: 'Low Energy', outro: 'Outro' }[p.tipo] || p.tipo}</small></td>
@@ -3075,8 +3186,26 @@ async function telaPlanos() {
         <td>${totRen ? `<b>${Math.round((r.renovou / totRen) * 100)}%</b>
           <br><small style="color:var(--txt-2)">${r.renovou} de ${totRen}</small>` : '—'}</td>
         <td><button class="btn mini ghost" onclick="formPlano(${p.id})">Editar</button></td>
-      </tr>`; }).join('')}</tbody></table>
+      </tr>`; }).join('')}</tbody></table>`}
     </div>`;
+}
+
+let SO_FAVORITOS = false;
+
+/* Marca e desmarca na hora, sem recarregar a tela inteira: ele clica em
+   vários seguidos e esperar o recarregamento a cada clique é ruim. */
+async function alternarFavorito(id) {
+  const p = PLANOS.find((x) => x.id === id);
+  if (!p) return;
+  const novo = p.favorito ? 0 : 1;
+  const bt = event && event.currentTarget;
+  if (bt) { bt.classList.toggle('on', !!novo); bt.textContent = novo ? '★' : '☆'; }
+  try { await api(`/planos/${id}/favorito`, { method: 'POST', body: { favorito: novo } }); }
+  catch (e) {
+    if (bt) { bt.classList.toggle('on', !novo); bt.textContent = p.favorito ? '★' : '☆'; }
+    return toast(e.message);
+  }
+  p.favorito = novo;
 }
 
 function formPlano(id) {
@@ -3819,6 +3948,43 @@ function horaNoFuso(fuso) {
   } catch { return '—'; }
 }
 
+/* ---------- relógios da coluna da esquerda ----------
+   Os mesmos lugares da tela de Conversores. Ele atende em oito países e
+   precisa saber a hora de lá antes de mandar mensagem ou marcar call —
+   então o relógio fica à vista o tempo todo, não só quando ele procura. */
+const LUGARES_RELOGIO = ['America/Sao_Paulo', 'America/New_York', 'America/Chicago',
+  'America/Denver', 'America/Los_Angeles', 'Europe/Lisbon', 'Europe/London', 'Europe/Prague'];
+let RELOGIO_TIMER = null;
+
+function iniciarRelogios() {
+  pintarRelogiosMenu();
+  clearInterval(RELOGIO_TIMER);
+  // de 20 em 20s para o minuto virar sem atraso visível, sem gastar à toa
+  RELOGIO_TIMER = setInterval(pintarRelogiosMenu, 20000);
+}
+
+function pintarRelogiosMenu() {
+  const alvo = $('#relogios');
+  if (!alvo) return;
+  const agora = new Date();
+  const meu = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  alvo.innerHTML = LUGARES_RELOGIO.map((f) => {
+    const p = partesNoFuso(agora, f);
+    const hora = p.hour === '24' ? '00' : p.hour;
+    const h = Number(hora);
+    const dormindo = h < 8 || h >= 21;          // fora da janela de falar com gente
+    const rotulo = (FUSOS_COMUNS.find(([k]) => k === f) || [, f])[1];
+    const dia = DIA_SEMANA[p.weekday] || '';
+    const hoje = partesNoFuso(agora, meu);
+    const outroDia = p.day !== hoje.day;
+    return `<div class="${f === meu ? 'aqui' : ''}${dormindo ? ' dormindo' : ''}">
+      <span class="rl-lugar">${esc(rotulo)}</span>
+      <span class="rl-hora">${hora}:${p.minute}${
+        outroDia ? `<small>${dia} ${p.day}</small>` : dormindo ? '<small>🌙</small>' : ''}</span>
+    </div>`;
+  }).join('');
+}
+
 /* ==========================================================
    LEMBRETE DE COMPROMISSO
    Uma hora antes, a tela avisa com som e não sai sozinha: o Luca precisa
@@ -4299,6 +4465,18 @@ async function telaConversores() {
         <p style="font-size:12.5px;color:var(--txt-2);margin:10px 0 0">1 pol = 2,54 cm · 1 pé = 30,48 cm</p>
       </div>
 
+      <div class="card">
+        <h3>Volume</h3>
+        <div class="grid g2" style="margin-top:10px">
+          <div><label>Litros</label><input id="cvL" type="number" step="0.01"></div>
+          <div><label>Onças líquidas (fl oz)</label><input id="cvOz" type="number" step="0.01"></div>
+          <div><label>Mililitros</label><input id="cvMl" type="number" step="1"></div>
+          <div><label>Copos americanos (cup)</label><input id="cvCup" type="number" step="0.01"></div>
+        </div>
+        <p style="font-size:12.5px;color:var(--txt-2);margin:10px 0 0">
+          Padrão dos EUA: 1 fl oz = 29,5735 ml · 1 cup = 8 fl oz = 236,588 ml</p>
+      </div>
+
       <div class="card" style="grid-column:1/-1">
         <h3>Moeda <button class="btn ghost mini" id="cvAtualizar"
           style="float:right;margin-top:-2px">Atualizar cotação</button></h3>
@@ -4338,6 +4516,7 @@ async function telaConversores() {
 
   ligarPeso('cvKg', 'cvLb');
   ligarAltura('cvCm', 'cvPes', 'cvPol');
+  ligarVolume();
   ligarMoeda();
 }
 
@@ -4383,6 +4562,26 @@ function pintarRelogios(meu) {
         ${p.hour === '24' ? '00' : p.hour}:${p.minute}${dormindo ? ' 🌙' : ''}</b>
     </div>`;
   }).join('');
+}
+
+/* Volume: ele monta dieta para paciente nos EUA, que mede água e líquidos em
+   fl oz e cup. Qualquer campo preenche os outros três. */
+const ML_POR_OZ = 29.5735295625;
+const ML_POR_CUP = ML_POR_OZ * 8;
+
+function ligarVolume() {
+  const l = $('#cvL'), oz = $('#cvOz'), ml = $('#cvMl'), cup = $('#cvCup');
+  if (!l) return;
+  const limpar = () => { [l, oz, ml, cup].forEach((c) => { c.value = ''; }); };
+  const daMl = (v, menos) => {
+    if (!(v > 0)) return limpar();
+    const n = (c, x, casas) => { if (c !== menos) c.value = Number(x.toFixed(casas)); };
+    n(ml, v, 0); n(l, v / 1000, 3); n(oz, v / ML_POR_OZ, 2); n(cup, v / ML_POR_CUP, 2);
+  };
+  l.oninput = () => daMl(Number(l.value) * 1000, l);
+  ml.oninput = () => daMl(Number(ml.value), ml);
+  oz.oninput = () => daMl(Number(oz.value) * ML_POR_OZ, oz);
+  cup.oninput = () => daMl(Number(cup.value) * ML_POR_CUP, cup);
 }
 
 let CV_RELOGIO = null;

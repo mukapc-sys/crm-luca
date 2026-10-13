@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS planos (
   regras         TEXT,
   ativo          INTEGER NOT NULL DEFAULT 1,
   posicao        INTEGER DEFAULT 0
-);
+,
+  favorito       INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS parceiros (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
   nome    TEXT NOT NULL,
@@ -68,7 +69,8 @@ CREATE TABLE IF NOT EXISTS pacientes (
   inbody_ativo INTEGER NOT NULL DEFAULT 0,
   inbody_modelo TEXT,
   inbody_plano TEXT,
-  dieta_kcal REAL
+  dieta_kcal REAL,
+  alertas TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pac_cod    ON pacientes(cod);
 CREATE INDEX IF NOT EXISTS idx_pac_status ON pacientes(status);
@@ -366,7 +368,8 @@ CREATE TABLE IF NOT EXISTS form_campos (
   opcoes_pt TEXT, opcoes_en TEXT, opcoes_es TEXT,
   obrigatorio INTEGER NOT NULL DEFAULT 1,
   ativo INTEGER NOT NULL DEFAULT 1,
-  posicao INTEGER DEFAULT 0
+  posicao INTEGER DEFAULT 0,
+  alerta INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_fcampo_bloco ON form_campos(bloco_chave, posicao);
 INSERT OR IGNORE INTO form_blocos (chave,titulo_pt,titulo_en,titulo_es,ajuda_pt,ajuda_en,ajuda_es,posicao) VALUES

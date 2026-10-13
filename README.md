@@ -11,7 +11,7 @@ Suba estes arquivos mantendo a estrutura:
 ```
 schema.sql
 schema-uma-linha.sql
-migrate-01.sql … migrate-09.sql
+migrate-01.sql … migrate-10.sql
 functions/_middleware.js
 functions/api/[[path]].js
 public/index.html
@@ -205,6 +205,14 @@ de que dia é — em vez de mostrar um número velho como se fosse de hoje.
 Além de dólar, euro e libra, dá para converter dólar canadense, franco
 suíço, dólar australiano, peso argentino e iene.
 
+## Relógios na coluna da esquerda
+
+Abaixo do botão Sair, os mesmos oito lugares da tela de Conversores, dois
+níveis por linha: o lugar em cima, a hora embaixo. Ocupam o resto da coluna
+e se atualizam sozinhos. Fora da janela de 8h às 21h daquele lugar, a hora
+fica cinza com uma lua — é o aviso de que não dá para mandar mensagem agora.
+Quando lá já é outro dia, aparece o dia da semana ao lado.
+
 ## Unidades e fuso
 
 Ele atende em oito países. Onde houver peso ou altura — cadastro do
@@ -229,6 +237,25 @@ A **calculadora abre por cima da ficha**, não no lugar dela: volta e está
 tudo como estava. Ela já abre com o peso que ele acabou de digitar e com a
 idade da data daquela consulta, e o botão **Usar na ficha** devolve o peso e
 o nível de atividade para a ficha.
+
+## Alertas alimentares
+
+Alergia, intolerância, alimento que o paciente não come: fica em **vermelho,
+com ícone e texto**, no topo da ficha do paciente e da ficha de consulta —
+antes de tudo, não no meio do formulário.
+
+Vem de duas fontes:
+
+- **O formulário.** As perguntas marcadas como alerta em *Configurações →
+  Perguntas*; por padrão, a de restrição/alergia/intolerância. Como as
+  respostas antigas foram gravadas com o texto da pergunta da época, o
+  sistema casa tanto pelo rótulo atual quanto por um padrão de palavras
+  (restrição, alergia, intolerância, evitar, lactose, glúten, "não come") —
+  as anamneses importadas aparecem do mesmo jeito.
+- **O Luca.** O botão *+ alerta alimentar* abre um campo livre, um por
+  linha, para o que ele ouve na consulta. Esses vêm primeiro.
+
+Resposta que é "não", "nenhuma" ou "-" não vira alerta.
 
 ## As três pesagens da ficha
 
@@ -291,6 +318,13 @@ sem rolar. Esc fecha.
 Os textos explicativos, o rodapé de contato e o modelo do aparelho ficam
 em **Configurações → Textos do InBody**. O plano e o modelo podem ser
 trocados por paciente no botão **Cabeçalho**.
+
+## Conversores
+
+Peso, altura, **volume** e moeda, mais o simulador de fuso. O de volume faz
+litro, mililitro, onça líquida e copo americano — qualquer campo preenche os
+outros três (1 fl oz = 29,5735 ml, 1 cup = 8 fl oz), que é o que ele precisa
+para montar dieta de paciente nos EUA.
 
 ## Impressão do InBody
 
@@ -408,6 +442,11 @@ o link de novo — é o mesmo link, continua valendo.
 
 ## Agenda
 
+Ao escolher a data no modal de compromisso, o **dia da semana** aparece
+logo abaixo do campo — "Quinta-feira", "Terça-feira · hoje", "Sábado". Data
+já passada sai em vermelho dizendo "já passou". Ele marca pensando em
+"quinta de manhã", não em "15/10".
+
 Cabeçalho dos dias da semana e as células do mês são **uma grade só**. Eram
 duas grades irmãs com as mesmas colunas, e bastava um compromisso de título
 comprido esticar uma coluna para o "QUI" parar em cima de quarta: as
@@ -423,6 +462,13 @@ Quando o título do compromisso já contém o nome do paciente, o nome não é
 repetido ao lado — em coluna de 150px isso cortava os dois. No celular a
 grade vira uma coluna, cada dia mostra a própria sigla e os títulos quebram
 em linha em vez de cortar.
+
+## Plano favorito
+
+Estrela antes do nome de cada plano. Vazada é normal, cheia e amarela é
+favorito. Favorito **sobe para o topo da lista** em todo lugar que lista
+planos, e o botão *★ Só favoritos* esconde o resto. O clique salva na hora,
+sem recarregar a tela, e editar o cadastro do plano não apaga a estrela.
 
 ## Calorias da dieta e saldo calórico
 
@@ -488,6 +534,8 @@ No console do D1, na ordem:
 8. `migrate-08.sql` — tira a escolha de plano do formulário do paciente
    (um comando só)
 9. `migrate-09.sql` — calorias da dieta na ficha e no cadastro (dois
+   comandos)
+10. `migrate-10.sql` — alertas alimentares e favorito do plano (quatro
    comandos)
 
 Se estiver em dúvida sobre quais já rodaram, o próprio sistema diz: ao
