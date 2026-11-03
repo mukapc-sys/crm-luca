@@ -306,6 +306,7 @@ async function telaHome() {
 
   $('#tela').innerHTML = `
     <div id="formNovos"></div>
+    <div id="avisoPlanos"></div>
     <div class="topo">
       <div><h1>Início</h1><p>${new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric', timeZone: 'America/Sao_Paulo' })}</p></div>
       <div class="dir">
@@ -358,6 +359,42 @@ async function telaHome() {
     </div>`;
 
   pintarFormulariosNovos();
+  pintarAvisoPlanos();
+}
+
+/* ---------- planos sem preço ----------
+   Os 39 planos vieram da planilha sem valor e com 30 dias chutados. Com isso
+   o faturamento previsto e o aviso de renovação saem errados, e ninguém além
+   do Luca sabe os números. O aviso fica no Início até ele resolver, e some
+   sozinho quando resolver. */
+async function pintarAvisoPlanos() {
+  const alvo = $('#avisoPlanos');
+  if (!alvo) return;
+  let d;
+  try { d = await api('/planos/pendencias'); } catch { return; }
+  const faltas = [];
+  if (d.sem_preco) faltas.push(`<b>${d.sem_preco}</b> ${d.sem_preco === 1
+    ? 'plano está sem preço' : 'planos estão sem preço'} (R$ 0 / US$ 0)`);
+  if (d.duracao_provisoria) faltas.push(`<b>${d.duracao_provisoria}</b> ${
+    d.duracao_provisoria === 1 ? 'plano está' : 'planos estão'} com duração de 30 dias,
+    que entrou como provisória na importação`);
+  if (d.contratos_sem_plano) faltas.push(`<b>${d.contratos_sem_plano}</b> ${
+    d.contratos_sem_plano === 1 ? 'contrato não está ligado' : 'contratos não estão ligados'
+    } a nenhum plano`);
+  if (!faltas.length) { alvo.innerHTML = ''; return; }
+  alvo.innerHTML = `
+    <div class="card aviso-planos">
+      <h3>Falta acertar a tabela de planos</h3>
+      <ul style="margin:8px 0 10px;padding-left:18px;font-size:13.5px;line-height:1.7">
+        ${faltas.map((f) => `<li>${f}</li>`).join('')}
+      </ul>
+      <p style="font-size:13px;color:var(--txt-2);margin:0 0 12px">
+        Enquanto ficar assim, o <b>faturamento previsto</b> e o
+        <b>aviso de renovação</b> saem errados${d.contratos_afetados
+          ? ` — são ${d.contratos_afetados} contratos usando plano sem preço` : ''}.
+        Preencha valor e duração de cada plano e este aviso desaparece.</p>
+      <button class="btn ouro" onclick="irPara('planos')">Ajustar os planos agora</button>
+    </div>`;
 }
 
 /* ---------- formulário recém-preenchido, esperando o ok ----------

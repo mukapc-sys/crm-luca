@@ -495,6 +495,16 @@ async function aproveitarAnamnese(env, pid, a) {
 
   let ficha = false;
   const kg = a.peso_kg ? num(a.peso_kg) : 0;
+
+  /* O peso da anamnese é o ponto zero do processo, e a data da resposta é
+     quando ele começou. Só preenche o que está vazio: se o Luca já digitou,
+     o que ele digitou vale mais. */
+  if (kg > 0 || a.respondido_em) await talvez(() => env.DB.prepare(
+    `UPDATE pacientes SET
+        peso_inicial_kg=COALESCE(peso_inicial_kg,?),
+        inicio_em=COALESCE(NULLIF(inicio_em,''),NULLIF(?,''))
+      WHERE id=?`).bind(kg > 0 ? kg : null, a.respondido_em || '', pid).run(), null);
+
   if (kg > 0) {
     const tem = await env.DB.prepare(
       'SELECT id FROM consultas WHERE paciente_id=? LIMIT 1').bind(pid).first();
@@ -1892,6 +1902,32 @@ export async function onRequest(context) {
         || await env.DB.prepare('SELECT * FROM planos ORDER BY posicao, codigo').all();
       return json({ planos: r.results || [] });
     }
+    /* O catálogo de planos veio da planilha sem preço e com duração chutada em
+       30 dias. Enquanto ficar assim, o faturamento previsto e o aviso de
+       renovação saem errados — e só o Luca sabe os números certos. Por isso o
+       Início cobra ele até os planos estarem preenchidos. */
+    if (rota === '/planos/pendencias' && metodo === 'GET') {
+      const sem = await talvez(() => env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM planos
+          WHERE ativo=1 AND COALESCE(preco_brl,0)=0 AND COALESCE(preco_usd,0)=0`).first(), null);
+      const trinta = await talvez(() => env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM planos WHERE ativo=1 AND COALESCE(dias,0)=30`).first(), null);
+      const total = await talvez(() => env.DB.prepare(
+        'SELECT COUNT(*) AS n FROM planos WHERE ativo=1').first(), null);
+      const contratos = await talvez(() => env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM contratos c JOIN planos p ON p.id=c.plano_id
+          WHERE COALESCE(p.preco_brl,0)=0 AND COALESCE(p.preco_usd,0)=0`).first(), null);
+      const soltos = await talvez(() => env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM contratos WHERE plano_id IS NULL`).first(), null);
+      return json({
+        planos: (total && total.n) || 0,
+        sem_preco: (sem && sem.n) || 0,
+        duracao_provisoria: (trinta && trinta.n) || 0,
+        contratos_afetados: (contratos && contratos.n) || 0,
+        contratos_sem_plano: (soltos && soltos.n) || 0,
+      });
+    }
+
     if (rota === '/planos' && metodo === 'POST') {
       const b = body;
       if (!b.codigo || !b.nome) return bad('Código e nome são obrigatórios.');
@@ -2833,7 +2869,7 @@ export async function onRequest(context) {
 
     if (rota === '/importar/anamneses' && metodo === 'POST') {
       const linhas = Array.isArray(body.linhas) ? body.linhas : [];
-      let gravadas = 0, casadas = 0, completados = 0, fichas = 0;
+      let gravadas = 0, casadas = 0, completados = 0, fichas = 0, repetidas = 0;
       for (const a of linhas) {
         if (!a.nome) continue;
         // paciente_nome vem do cruzamento já resolvido (o COD do Luca é o
@@ -2841,7 +2877,12 @@ export async function onRequest(context) {
         // trechos). Sem ele, tenta pelo nome de quem respondeu e pelo código.
         let pid = null;
         let p = null;
-        if (a.paciente_nome) p = await env.DB.prepare(
+        /* paciente_id vem do cruzamento já conferido fora do sistema e é o
+           caminho mais seguro: nome de paciente muda (apelido de venda vira
+           nome real) e o COD se repete entre os dois formulários. */
+        if (a.paciente_id) p = await env.DB.prepare(
+          'SELECT * FROM pacientes WHERE id=?').bind(Number(a.paciente_id)).first();
+        if (!p && a.paciente_nome) p = await env.DB.prepare(
           'SELECT * FROM pacientes WHERE lower(trim(nome))=lower(trim(?)) LIMIT 1')
           .bind(a.paciente_nome).first();
         if (!p) p = await env.DB.prepare(
@@ -2849,6 +2890,16 @@ export async function onRequest(context) {
             WHERE lower(trim(nome))=lower(trim(?)) OR (cod IS NOT NULL AND cod=?)`)
           .bind(a.nome, a.cod ? String(a.cod) : '___').first();
         if (p) { pid = p.id; casadas++; }
+
+        /* Importar duas vezes não pode dobrar a ficha: a mesma resposta é a
+           mesma origem na mesma data para o mesmo paciente. */
+        if (pid && a.respondido_em) {
+          const ja = await env.DB.prepare(
+            `SELECT id FROM anamneses
+              WHERE paciente_id=? AND origem=? AND respondido_em=? LIMIT 1`)
+            .bind(pid, a.origem || 'BR', a.respondido_em).first();
+          if (ja) { repetidas++; continue; }
+        }
         /* Guarda também os campos já lidos da resposta (altura, nascimento,
            CPF…). Sem eles, uma ficha que só ganha dono depois entraria no
            cadastro vazia: o JSON de `dados` tem as perguntas cruas, não os
@@ -2878,7 +2929,7 @@ export async function onRequest(context) {
           if (r.ficha) fichas++;
         }
       }
-      return json({ ok: true, gravadas, casadas, completados, fichas });
+      return json({ ok: true, gravadas, casadas, completados, fichas, repetidas });
     }
 
     /* ---------- pré-cadastro de venda ----------

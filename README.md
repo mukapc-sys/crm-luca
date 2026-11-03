@@ -632,6 +632,38 @@ sem paciente duplicado e sem segunda negociação aberta.
 Título, texto de abertura e mensagem de agradecimento saem de
 Configurações. São em português: em inglês a página usa os textos padrão.
 
+## Aviso de plano sem preço
+
+O catálogo de planos veio da planilha sem valor e com 30 dias chutados. Com
+isso o **faturamento previsto** e o **aviso de renovação** saem errados, e só
+o Luca sabe os números certos. Enquanto ficar assim, o **Início** mostra um
+cartão âmbar no topo dizendo quantos planos estão sem preço, quantos estão com
+a duração provisória de 30 dias e quantos contratos dependem disso, com um
+botão que leva direto para a tela de planos. Preenchido, o aviso desaparece
+sozinho — não tem nada para marcar como lido.
+
+## Importar as anamneses antigas
+
+Configurações → **Importar dados** → tipo **Anamneses (formulário)** → o
+arquivo `.json`. Arquivo grande vai em blocos automaticamente.
+
+Cada linha pode trazer `paciente_id`, e é o caminho mais seguro: nome de
+paciente muda (apelido de venda vira nome real) e o mesmo COD existe nos dois
+formulários. Sem ele, o import ainda tenta por `paciente_nome`, depois por
+nome e COD.
+
+Do que a resposta traz, o import **só preenche o que está vazio** na ficha —
+e-mail, telefone, Instagram, nascimento, CPF, profissão, endereço, objetivo,
+altura, **peso inicial** e **data de início**. O que o Luca digitou vale mais
+e não é sobrescrito. O peso da resposta também vira a primeira ficha de
+consulta, para a evolução começar do dia zero — mas só se o paciente ainda
+não tiver nenhuma consulta.
+
+Importar o mesmo arquivo duas vezes não duplica nada: mesma origem, mesma data
+e mesmo paciente é a mesma resposta, e o resultado diz quantas foram puladas.
+Anamnese importada entra já liberada, então não aparece no cartão de
+"Formulário novo" — aquele cartão é para quem respondeu agora.
+
 ## Formulário novo espera o ok
 
 Toda anamnese respondida entra como **esperando liberação**, inclusive a de
