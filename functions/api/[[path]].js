@@ -293,7 +293,11 @@ async function gerarParcelas(env, contrato) {
   await env.DB.prepare('DELETE FROM parcelas WHERE contrato_id=? AND status<>\'paga\'')
     .bind(contrato.id).run();
   const qtd = Math.max(1, Number(contrato.qtd_parcelas || 1));
-  const valorParcela = Math.round((Number(contrato.valor_cobrado || 0) / qtd) * 100) / 100;
+  /* O app fica com um pedaço da venda. O contrato guarda o que foi cobrado do
+     paciente; a parcela é o que de fato entra, já sem o desconto. */
+  const liquido = Math.max(0,
+    Number(contrato.valor_cobrado || 0) - Number(contrato.desconto || 0));
+  const valorParcela = Math.round((liquido / qtd) * 100) / 100;
   // parceria e cortesia não têm o que cobrar: sem parcela, sem aviso na home
   if (!(valorParcela > 0)) return;
   const base = contrato.data_inicial || hoje();
@@ -376,6 +380,77 @@ async function fusoDoLugar(env, cidade, pais) {
 
 // token do link de anamnese: só o Luca gera, e vale para um paciente só
 const novoToken = () => crypto.randomUUID().replace(/-/g, '').slice(0, 24);
+
+/* ==========================================================
+   UNIFICAR CADASTROS REPETIDOS
+   A base veio de três fontes e a mesma pessoa aparece várias vezes — cada
+   renovação virou cadastro novo. Unir move tudo para um cadastro só e apaga
+   os outros, então nada acontece sem o Luca marcar: a tela sugere, ele
+   decide. Cada absorção vai para uniao_log, com quem absorveu quem.
+   ========================================================== */
+const TABELAS_DO_PACIENTE = ['contratos', 'parcelas', 'pagamentos', 'consultas',
+  'anamneses', 'anexos', 'compromissos', 'negociacoes', 'interacoes', 'inbody', 'wa_fila'];
+
+function codNumero(v) {
+  const m = String(v == null ? '' : v).trim().match(/^(\d+)/);
+  return m ? Number(m[1]) : Infinity;
+}
+// fica o mais antigo: menor COD e, empatando, o id menor
+function escolherMantido(lista) {
+  return [...lista].sort((a, b) =>
+    codNumero(a.cod) - codNumero(b.cod)
+    || String(a.cod || '').localeCompare(String(b.cod || ''))
+    || a.id - b.id)[0];
+}
+const CAMPOS_COMPARADOS = ['nome', 'apelido', 'email', 'telefone', 'instagram', 'nascimento',
+  'cpf', 'profissao', 'endereco', 'cidade', 'pais', 'objetivo', 'sexo', 'altura_cm',
+  'indicacao', 'status', 'obs', 'alertas'];
+
+function divergenciasDe(lista, mantido) {
+  const fora = [];
+  for (const campo of CAMPOS_COMPARADOS) {
+    const vistos = [];
+    for (const p of lista) {
+      const v = p[campo];
+      if (v === null || v === undefined || String(v).trim() === '') continue;
+      const txt = String(v).trim();
+      if (!vistos.some((x) => x.valor.toLowerCase() === txt.toLowerCase())) {
+        vistos.push({ valor: txt, de_id: p.id, de_nome: p.nome, de_cod: p.cod });
+      }
+    }
+    if (vistos.length > 1) {
+      fora.push({ campo, atual: mantido[campo] == null ? '' : String(mantido[campo]), opcoes: vistos });
+    }
+  }
+  return fora;
+}
+
+/* Guarda a memória do que foi unido: o COD e o nome antigos ficam no cadastro
+   que sobrou, e é por eles que a busca continua achando a pessoa. */
+async function aplicarEscolhas(env, mantido, absorvidos, escolhas) {
+  const campos = Object.entries(escolhas || {})
+    .filter(([c, v]) => CAMPOS_COMPARADOS.includes(c) && v !== undefined && v !== null);
+  for (const [campo, valor] of campos) {
+    await talvez(() => env.DB.prepare(`UPDATE pacientes SET ${campo}=? WHERE id=?`)
+      .bind(valor === '' ? null : valor, mantido.id).run(), null);
+  }
+  const juntar = (atual, novos) => {
+    const l = String(atual || '').split('|').map((x) => x.trim()).filter(Boolean);
+    novos.filter(Boolean).map((x) => String(x).trim()).forEach((x) => {
+      if (x && !l.some((y) => y.toLowerCase() === x.toLowerCase())) l.push(x);
+    });
+    return l.join(' | ') || null;
+  };
+  const atual = await env.DB.prepare(
+    'SELECT cod, nome, cods_antigos, nomes_antigos FROM pacientes WHERE id=?')
+    .bind(mantido.id).first().catch(() => null);
+  await talvez(() => env.DB.prepare(
+    "UPDATE pacientes SET cods_antigos=?, nomes_antigos=?, updated_at=datetime('now') WHERE id=?")
+    .bind(
+      juntar(atual && atual.cods_antigos, absorvidos.map((x) => x.cod)),
+      juntar(atual && atual.nomes_antigos, absorvidos.map((x) => x.nome)),
+      mantido.id).run(), null);
+}
 
 // o formulário tem domínio próprio; sem ele configurado, usa o do CRM
 async function baseFormulario(env, url) {
@@ -758,10 +833,18 @@ export async function onRequest(context) {
       let pid, cod;
       if (pac) {
         pid = pac.id; cod = pac.cod;
-        /* Pré-cadastro feito sem o nome completo: quem responde pelo link é a
-           própria pessoa, então o nome dela substitui o rótulo provisório. */
-        if (/^sem nome/i.test(String(pac.nome || '').trim()) || !String(pac.nome || '').trim()) {
-          await env.DB.prepare('UPDATE pacientes SET nome=? WHERE id=?').bind(nome, pid).run();
+        /* Quem responde pelo link do próprio paciente é a própria pessoa, então
+           o nome que ela escreve vale mais que o rótulo da call ("Vanessa EUA",
+           "Keke - Amiga Gessy"). O rótulo antigo desce para Apelido, que é como
+           o Luca reconhece a pessoa na lista — ninguém perde a referência. */
+        const nomeVelho = String(pac.nome || '').trim();
+        const provisorio = /^sem nome/i.test(nomeVelho) || !nomeVelho;
+        if (nome && (provisorio || tok)) {
+          const viraApelido = (!provisorio && !String(pac.apelido || '').trim()
+            && nomeVelho.toLowerCase() !== nome.toLowerCase()) ? nomeVelho : null;
+          await env.DB.prepare(
+            `UPDATE pacientes SET nome=?, apelido=COALESCE(NULLIF(?,''),apelido) WHERE id=?`)
+            .bind(nome, viraApelido || '', pid).run();
         }
         await env.DB.prepare(
           `UPDATE pacientes SET email=COALESCE(NULLIF(?,''),email),
@@ -790,7 +873,13 @@ export async function onRequest(context) {
       if (tok) await env.DB.prepare(
         'UPDATE pacientes SET form_token=NULL WHERE form_token=?').bind(tok).run();
 
-      await env.DB.prepare(
+      /* Chega como "esperando o ok": o Luca confere antes de a ficha entrar no
+         fluxo. Banco sem a coluna grava do jeito antigo e nada trava. */
+      const anaFeita = await talvez(() => env.DB.prepare(
+        `INSERT INTO anamneses (paciente_id,cod,nome,email,telefone,respondido_em,origem,dados,liberada)
+         VALUES (?,?,?,?,?,?,?,?,0)`
+      ).bind(pid, cod, nome, email, telefone, hoje(), idioma, JSON.stringify(respostas)).run(), null);
+      if (!anaFeita) await env.DB.prepare(
         `INSERT INTO anamneses (paciente_id,cod,nome,email,telefone,respondido_em,origem,dados)
          VALUES (?,?,?,?,?,?,?,?)`
       ).bind(pid, cod, nome, email, telefone, hoje(), idioma, JSON.stringify(respostas)).run();
@@ -1253,6 +1342,169 @@ export async function onRequest(context) {
     // DIAGNÓSTICO — o que o banco ainda não tem
     // Sem CLI, é assim que ele descobre qual migração falta rodar.
     // ==========================================================
+    /* ---------- quem parece ser a mesma pessoa ----------
+       O COD do mini CRM é o número da resposta no formulário, e existem dois
+       formulários, BR e US — por isso o mesmo COD aparece em pessoas
+       diferentes. Só conta como repetição quando o país também bate. */
+    if (rota === '/unificar/sugestoes' && metodo === 'GET') {
+      const r = await env.DB.prepare('SELECT * FROM pacientes').all();
+      const todos = r.results || [];
+      const grupos = new Map();
+      const guardar = (chave, tipo, p) => {
+        if (!grupos.has(chave)) grupos.set(chave, { provas: new Set(), pacientes: new Map() });
+        const g = grupos.get(chave);
+        g.provas.add(tipo);
+        g.pacientes.set(p.id, p);
+      };
+      const soDigitos = (v) => String(v || '').replace(/\D/g, '');
+      for (const p of todos) {
+        const cpf = soDigitos(p.cpf);
+        if (cpf.length === 11) guardar('cpf:' + cpf, 'cpf', p);
+        const mail = String(p.email || '').trim().toLowerCase();
+        if (mail.includes('@')) guardar('mail:' + mail, 'email', p);
+        const tel = soDigitos(p.telefone);
+        if (tel.length >= 8) guardar('tel:' + tel.slice(-8), 'telefone', p);
+        const cod = String(p.cod || '').trim();
+        if (cod && !['x', '?', '0', ''].includes(cod.toLowerCase())) {
+          guardar(`cod:${cod}|${p.pais || ''}`, 'cod_pais', p);
+        }
+      }
+      const primeiroNome = (n) => String(n || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .toLowerCase().replace(/[^a-z ]/g, ' ').trim().split(/\s+/)[0] || '';
+      const fora = [];
+      const jaVisto = new Set();
+      for (const g of grupos.values()) {
+        const lista = [...g.pacientes.values()];
+        if (lista.length < 2) continue;
+        const assinatura = lista.map((x) => x.id).sort((a, b) => a - b).join(',');
+        if (jaVisto.has(assinatura)) continue;
+        jaVisto.add(assinatura);
+        const mantido = escolherMantido(lista);
+        const primeiros = [...new Set(lista.map((x) => primeiroNome(x.nome)).filter(Boolean))];
+        const atencao = primeiros.length > 1;
+        fora.push({
+          provas: [...g.provas].map((tipo) => ({ tipo })),
+          mantido_id: mantido.id,
+          atencao,
+          motivo_atencao: atencao
+            ? `Os nomes são de pessoas diferentes (${primeiros.join(', ')}).`
+              + ' Pode ser parente usando o mesmo CPF, telefone ou e-mail — ou o mesmo'
+              + ' número em formulários diferentes.'
+            : '',
+          pacientes: lista.map((x) => ({ id: x.id, cod: x.cod, nome: x.nome, apelido: x.apelido,
+            email: x.email, telefone: x.telefone, pais: x.pais, status: x.status })),
+        });
+      }
+      fora.sort((a, b) => (b.atencao - a.atencao) || (b.pacientes.length - a.pacientes.length));
+      return json({ grupos: fora, total_pacientes: todos.length,
+        cadastros_envolvidos: fora.reduce((t, g) => t + g.pacientes.length, 0),
+        com_atencao: fora.filter((g) => g.atencao).length });
+    }
+
+    if (rota === '/unificar/previa' && metodo === 'POST') {
+      const fora = [];
+      for (const g of (body.grupos || [])) {
+        const ids = (g.ids || []).map(Number).filter(Boolean);
+        if (ids.length < 2) continue;
+        const marca = ids.map(() => '?').join(',');
+        const ps = await env.DB.prepare(
+          `SELECT * FROM pacientes WHERE id IN (${marca})`).bind(...ids).all();
+        const achados = ps.results || [];
+        if (achados.length < 2) continue;
+        const mantido = g.mantido_id
+          ? achados.find((x) => x.id === Number(g.mantido_id)) || escolherMantido(achados)
+          : escolherMantido(achados);
+        const outros = achados.filter((x) => x.id !== mantido.id).map((x) => x.id);
+        const contagem = {};
+        for (const tb of TABELAS_DO_PACIENTE) {
+          const marca2 = outros.map(() => '?').join(',');
+          const q = await talvez(() => env.DB.prepare(
+            `SELECT COUNT(*) c FROM ${tb} WHERE paciente_id IN (${marca2})`).bind(...outros).first(), null);
+          if (q && q.c) contagem[tb] = q.c;
+        }
+        fora.push({ mantido_id: mantido.id, move: contagem,
+          divergencias: divergenciasDe(achados, mantido) });
+      }
+      return json({ grupos: fora });
+    }
+
+    if (rota === '/unificar' && metodo === 'POST') {
+      const grupos = Array.isArray(body.grupos) ? body.grupos : [];
+      if (!grupos.length) return bad('Nenhum grupo para unir.');
+      const temLog = await talvez(() => env.DB.prepare('SELECT id FROM uniao_log LIMIT 1').first(), false);
+      if (temLog === false) return bad('Falta rodar a migração 11 no banco.', 409);
+
+      const lote = `${hoje()}-${novoToken().slice(0, 8)}`;
+      let unidos = 0; let movidosTotal = 0;
+      const detalhe = [];
+      for (const g of grupos) {
+        const ids = (g.ids || []).map(Number).filter(Boolean);
+        if (ids.length < 2) continue;
+        const marca = ids.map(() => '?').join(',');
+        const ps = await env.DB.prepare(
+          `SELECT * FROM pacientes WHERE id IN (${marca})`).bind(...ids).all();
+        const achados = ps.results || [];
+        if (achados.length < 2) continue;
+        const mantido = g.mantido_id
+          ? achados.find((x) => x.id === Number(g.mantido_id)) || escolherMantido(achados)
+          : escolherMantido(achados);
+        const outros = achados.filter((x) => x.id !== mantido.id);
+
+        for (const o of outros) {
+          const movidos = {};
+          for (const tb of TABELAS_DO_PACIENTE) {
+            const antes = await talvez(() => env.DB.prepare(
+              `SELECT COUNT(*) c FROM ${tb} WHERE paciente_id=?`).bind(o.id).first(), null);
+            if (!antes) continue;
+            if (antes.c) {
+              await env.DB.prepare(`UPDATE ${tb} SET paciente_id=? WHERE paciente_id=?`)
+                .bind(mantido.id, o.id).run();
+              movidos[tb] = antes.c;
+              movidosTotal += antes.c;
+            }
+          }
+          await env.DB.prepare(
+            `INSERT INTO uniao_log (lote,mantido_id,mantido_nome,absorvido_id,absorvido_nome,
+                absorvido_cod,movidos) VALUES (?,?,?,?,?,?,?)`)
+            .bind(lote, mantido.id, mantido.nome, o.id, o.nome, o.cod || null,
+              JSON.stringify(movidos)).run();
+          await env.DB.prepare('DELETE FROM pacientes WHERE id=?').bind(o.id).run();
+        }
+        await aplicarEscolhas(env, mantido, outros, g.escolhas || {});
+        unidos += outros.length;
+        detalhe.push({ mantido_id: mantido.id, nome: mantido.nome,
+          absorvidos: outros.map((x) => x.nome) });
+      }
+      return json({ ok: true, lote, grupos: detalhe.length, cadastros_absorvidos: unidos,
+        registros_movidos: movidosTotal, detalhe });
+    }
+
+    /* ---------- exportar o banco inteiro ----------
+       Backup antes de qualquer operação grande, e o jeito de tirar os dados
+       daqui para conferir fora. Fusos e cotações ficam de fora: são tabelas
+       de referência, iguais em qualquer instalação, e só inchariam o arquivo. */
+    if (rota === '/exportar' && metodo === 'GET') {
+      const TABELAS = ['settings', 'usuarios', 'planos', 'parceiros', 'pacientes', 'contratos',
+        'parcelas', 'pagamentos', 'anamneses', 'consultas', 'compromissos', 'lista_espera',
+        'negociacoes', 'interacoes', 'motivos_perda', 'wa_templates', 'wa_fila', 'anexos',
+        'objetivos', 'form_blocos', 'form_campos', 'inbody', 'tarefas', 'uniao_log'];
+      const dados = {}; const faltando = [];
+      for (const tb of TABELAS) {
+        const r = await talvez(() => env.DB.prepare(`SELECT * FROM ${tb}`).all(), null);
+        if (!r) { faltando.push(tb); continue; }
+        // senha e token de sessão não saem daqui nem em backup
+        dados[tb] = (r.results || []).map((linha) => {
+          if (tb !== 'usuarios') return linha;
+          const { senha_hash, ...resto } = linha;
+          return resto;
+        });
+      }
+      const contagem = {};
+      Object.entries(dados).forEach(([tb, l]) => { contagem[tb] = l.length; });
+      return json({ gerado_em: new Date().toISOString(), versao: 1,
+        tabelas_faltando: faltando, contagem, dados });
+    }
+
     if (rota === '/diagnostico' && metodo === 'GET') {
       const EXIGE = [
         { migracao: 'migrate-01.sql', o_que: 'funil de vendas',
@@ -1274,12 +1526,21 @@ export async function onRequest(context) {
           tabelas: ['tarefas'], colunas: [['anamneses', 'extra']] },
         { migracao: 'migrate-09.sql', o_que: 'calorias da dieta e saldo calórico',
           tabelas: [], colunas: [['consultas', 'dieta_kcal'], ['pacientes', 'dieta_kcal']] },
+        { migracao: 'migrate-10.sql', o_que: 'alertas alimentares e plano favorito',
+          tabelas: [],
+          colunas: [['pacientes', 'alertas'], ['planos', 'favorito'], ['form_campos', 'alerta']] },
+        { migracao: 'migrate-11.sql',
+          o_que: 'unificar cadastros, peso inicial, desconto do app e liberação do formulário',
+          tabelas: ['uniao_log'],
+          colunas: [['pacientes', 'cods_antigos'], ['pacientes', 'nomes_antigos'],
+            ['pacientes', 'peso_inicial_kg'], ['pacientes', 'inicio_em'],
+            ['contratos', 'desconto'], ['anamneses', 'liberada']] },
       ];
       const existe = await env.DB.prepare(
         "SELECT name FROM sqlite_master WHERE type='table'").all();
       const tabelas = new Set((existe.results || []).map((x) => x.name));
       const colunasDe = {};
-      for (const t of ['pacientes', 'consultas', 'anamneses']) {
+      for (const t of ['pacientes', 'consultas', 'anamneses', 'planos', 'form_campos', 'contratos']) {
         if (!tabelas.has(t)) { colunasDe[t] = new Set(); continue; }
         const c = await env.DB.prepare(`PRAGMA table_info(${t})`).all();
         colunasDe[t] = new Set((c.results || []).map((x) => x.name));
@@ -1707,21 +1968,41 @@ export async function onRequest(context) {
                       GROUP BY p.paciente_id) ab
                  ON ab.paciente_id = pa.id
          WHERE 1=1`;
-      const args = [];
-      if (q) { sql += ' AND (pa.nome LIKE ? OR pa.apelido LIKE ? OR pa.cod LIKE ? OR pa.email LIKE ? OR pa.telefone LIKE ?)';
-        const like = `%${q}%`; args.push(like, like, like, like, like); }
-      if (status) { sql += ' AND pa.status=?'; args.push(status); }
-      if (objetivo) { sql += ' AND pa.objetivo LIKE ?'; args.push(`%${objetivo}%`); }
-      if (pais) { sql += ' AND pa.pais=?'; args.push(pais); }
-      if (plano) { sql += ' AND c.codigo_plano=?'; args.push(plano); }
-      sql += ' ORDER BY pa.nome COLLATE NOCASE ASC LIMIT ?'; args.push(limite);
-
+      /* Três versões da mesma consulta, da mais completa para a mais velha. A
+         busca pelo nome e pelo COD antigos só existe depois do migrate-11, e
+         cidade/fuso só depois do migrate-06 — o banco diz qual roda. */
       const NOVAS = 'pa.cidade, pa.fuso, pa.instagram, pa.inbody_ativo,';
-      let r = await talvez(
-        () => env.DB.prepare(sql.replace('COLUNAS_NOVAS', NOVAS)).bind(...args).all(), null);
-      // banco ainda sem o migrate-06: a tela abre sem os campos novos
-      if (!r) r = await env.DB.prepare(sql.replace('COLUNAS_NOVAS', '')).bind(...args).all();
-      return json({ pacientes: r.results || [] });
+      const UNIAO = 'pa.cods_antigos, pa.nomes_antigos, pa.peso_inicial_kg, pa.inicio_em,';
+      const montar = (colunas, buscaAntiga) => {
+        const args = [];
+        let s = sql.replace('COLUNAS_NOVAS', colunas);
+        if (q) {
+          const like = `%${q}%`;
+          s += ' AND (pa.nome LIKE ? OR pa.apelido LIKE ? OR pa.cod LIKE ?'
+            + ' OR pa.email LIKE ? OR pa.telefone LIKE ?';
+          args.push(like, like, like, like, like);
+          /* Quem foi unido continua achável pelo número e pelo nome velhos: é
+             assim que o Luca conhece a paciente, não pelo que sobrou da união. */
+          if (buscaAntiga) {
+            s += ' OR pa.cods_antigos LIKE ? OR pa.nomes_antigos LIKE ?';
+            args.push(like, like);
+          }
+          s += ')';
+        }
+        if (status) { s += ' AND pa.status=?'; args.push(status); }
+        if (objetivo) { s += ' AND pa.objetivo LIKE ?'; args.push(`%${objetivo}%`); }
+        if (pais) { s += ' AND pa.pais=?'; args.push(pais); }
+        if (plano) { s += ' AND c.codigo_plano=?'; args.push(plano); }
+        s += ' ORDER BY pa.nome COLLATE NOCASE ASC LIMIT ?'; args.push(limite);
+        return { s, args };
+      };
+      let r = null;
+      for (const [colunas, antiga] of [[NOVAS + ' ' + UNIAO, true], [NOVAS, false], ['', false]]) {
+        const { s, args } = montar(colunas, antiga);
+        r = await talvez(() => env.DB.prepare(s).bind(...args).all(), null);
+        if (r) break;
+      }
+      return json({ pacientes: (r && r.results) || [] });
     }
 
     if (rota === '/pacientes' && metodo === 'POST') {
@@ -1744,6 +2025,14 @@ export async function onRequest(context) {
         `INSERT INTO pacientes (cod,nome,apelido,pais,email,telefone,instagram,nascimento,cpf,
              profissao,endereco,objetivo,status,parceiro_id,indicacao,obs,sexo,altura_cm)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(...comuns).run();
+      // alergia, peso inicial e início ficam à parte: o banco pode não ter as colunas
+      if (b.alertas) await talvez(() => env.DB.prepare(
+        'UPDATE pacientes SET alertas=? WHERE id=?')
+        .bind(String(b.alertas).trim().slice(0, 1000) || null, res.meta.last_row_id).run(), null);
+      if (b.peso_inicial_kg || b.inicio_em) await talvez(() => env.DB.prepare(
+        'UPDATE pacientes SET peso_inicial_kg=?, inicio_em=? WHERE id=?')
+        .bind(b.peso_inicial_kg ? num(b.peso_inicial_kg) : null, b.inicio_em || null,
+          res.meta.last_row_id).run(), null);
       return json({ ok: true, id: res.meta.last_row_id, fuso });
     }
 
@@ -1801,6 +2090,13 @@ export async function onRequest(context) {
       if (b.alertas !== undefined) await talvez(() => env.DB.prepare(
         'UPDATE pacientes SET alertas=? WHERE id=?')
         .bind(String(b.alertas || '').trim().slice(0, 1000) || null, id).run(), null);
+      if (b.peso_inicial_kg !== undefined || b.inicio_em !== undefined) {
+        await talvez(() => env.DB.prepare(
+          `UPDATE pacientes SET peso_inicial_kg=COALESCE(?,peso_inicial_kg),
+               inicio_em=COALESCE(NULLIF(?,''),inicio_em) WHERE id=?`)
+          .bind(b.peso_inicial_kg ? num(b.peso_inicial_kg) : null,
+            b.inicio_em || '', id).run(), null);
+      }
       return json({ ok: true, fuso });
     }
 
@@ -1923,6 +2219,8 @@ export async function onRequest(context) {
           nome: String(r.nome || '').trim(),
           hora: String(r.hora || '').trim().slice(0, 5),
           texto: String(r.texto == null ? '' : r.texto),
+          // marcado como já atualizado no WebDiet
+          feito: r.feito ? 1 : 0,
         }))
         .filter((r) => r.nome) : null;
       const col = { cafe: null, lanche_manha: null, almoco: null, lanche_tarde: null, jantar: null, ceia: null };
@@ -2050,6 +2348,10 @@ export async function onRequest(context) {
       ).bind(b.paciente_id, b.plano_id || null, plano ? plano.codigo : (b.codigo_plano || null),
         ini, fim, valor, moeda, b.forma || null, Number(b.qtd_parcelas || 1),
         b.status || 'ativo', b.obs || null).run();
+      // desconto fica à parte: banco sem o migrate-11 continua cadastrando
+      if (b.desconto) await talvez(() => env.DB.prepare(
+        'UPDATE contratos SET desconto=? WHERE id=?')
+        .bind(num(b.desconto), res.meta.last_row_id).run(), null);
 
       const contrato = await env.DB.prepare('SELECT * FROM contratos WHERE id=?')
         .bind(res.meta.last_row_id).first();
@@ -2687,6 +2989,27 @@ export async function onRequest(context) {
        Resposta de formulário que não achou paciente nenhum fica guardada sem
        dono em vez de ser pendurada na pessoa errada. Esta tela é onde o Luca
        vê essas respostas e diz de quem é cada uma. */
+    /* Formulário que acabou de chegar e ainda não passou pelo olho do Luca.
+       Fica em destaque na tela de Início até ele liberar. */
+    if (rota === '/anamneses/novas' && metodo === 'GET') {
+      const r = await talvez(() => env.DB.prepare(
+        `SELECT a.id, a.cod, a.nome, a.email, a.telefone, a.respondido_em, a.origem,
+                a.paciente_id, pa.nome AS paciente_nome, pa.apelido AS paciente_apelido
+           FROM anamneses a
+           LEFT JOIN pacientes pa ON pa.id = a.paciente_id
+          WHERE a.liberada = 0
+          ORDER BY a.respondido_em DESC, a.id DESC`).all(), null);
+      // banco sem a coluna: ninguém fica esperando aprovação
+      return json({ linhas: r ? (r.results || []) : [], tem_coluna: !!r });
+    }
+
+    if (rota.startsWith('/anamneses/') && seg[2] === 'liberar' && metodo === 'POST') {
+      const feito = await talvez(() => env.DB.prepare(
+        'UPDATE anamneses SET liberada=1 WHERE id=?').bind(Number(seg[1])).run(), null);
+      if (!feito) return bad('Falta rodar a migração 11 no banco.', 409);
+      return json({ ok: true });
+    }
+
     if (rota === '/anamneses/sem-dono' && metodo === 'GET') {
       const r = await talvez(() => env.DB.prepare(
         `SELECT id, cod, nome, email, telefone, respondido_em, origem,

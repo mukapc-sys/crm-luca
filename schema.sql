@@ -70,7 +70,11 @@ CREATE TABLE IF NOT EXISTS pacientes (
   inbody_modelo TEXT,
   inbody_plano TEXT,
   dieta_kcal REAL,
-  alertas TEXT
+  alertas TEXT,
+  cods_antigos TEXT,
+  nomes_antigos TEXT,
+  peso_inicial_kg REAL,
+  inicio_em TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pac_cod    ON pacientes(cod);
 CREATE INDEX IF NOT EXISTS idx_pac_status ON pacientes(status);
@@ -88,7 +92,8 @@ CREATE TABLE IF NOT EXISTS contratos (
   qtd_parcelas  INTEGER DEFAULT 1,
   status        TEXT DEFAULT 'ativo',
   obs           TEXT,
-  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  desconto      REAL
 );
 CREATE INDEX IF NOT EXISTS idx_con_pac ON contratos(paciente_id);
 CREATE TABLE IF NOT EXISTS parcelas (
@@ -139,7 +144,8 @@ CREATE TABLE IF NOT EXISTS anamneses (
   origem        TEXT DEFAULT 'BR',
   dados         TEXT,
   extra         TEXT,
-  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  liberada      INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_ana_pac  ON anamneses(paciente_id);
 CREATE INDEX IF NOT EXISTS idx_ana_orfa ON anamneses(paciente_id,nome);
@@ -1135,3 +1141,16 @@ CREATE TABLE IF NOT EXISTS tarefas (
 );
 CREATE INDEX IF NOT EXISTS idx_tarefa_aberta ON tarefas(feita, data, hora);
 CREATE INDEX IF NOT EXISTS idx_tarefa_feita ON tarefas(feita, feita_em);
+CREATE TABLE IF NOT EXISTS uniao_log (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  lote          TEXT NOT NULL,
+  mantido_id    INTEGER NOT NULL,
+  mantido_nome  TEXT,
+  absorvido_id  INTEGER NOT NULL,
+  absorvido_nome TEXT,
+  absorvido_cod TEXT,
+  movidos       TEXT,
+  feito_em      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_uniao_lote ON uniao_log(lote);
+CREATE INDEX IF NOT EXISTS idx_ana_liberada ON anamneses(liberada);

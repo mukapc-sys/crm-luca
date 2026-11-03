@@ -45,10 +45,22 @@ const zap = (tel, msg = '') => {
 // laranja = marcado · verde = realizado · vermelho = cancelado
 const CORES_COMPROMISSO = {
   marcado:   { bg: '#FDF0DC', txt: '#8A5A00', borda: '#E09112' },
+  treino:    { bg: '#E3F3EA', txt: '#14653C', borda: '#1E8E5A' },
+  plano:     { bg: '#E4EDFB', txt: '#1B4079', borda: '#2C62B6' },
   feito:     { bg: '#E3F3EA', txt: '#14653C', borda: '#1E8E5A' },
   cancelado: { bg: '#FCECE9', txt: '#93261A', borda: '#C0392B' },
 };
-const ROTULO_COMPROMISSO = { marcado: 'Marcado', feito: 'Realizado', cancelado: 'Cancelado' };
+/* O que falta depois da call vira situação do compromisso: é na agenda que
+   ele olha o dia, então a pendência mora junto do horário, não numa lista à
+   parte. Verde é treino, azul é plano — as cores que ele já usa. */
+const ROTULO_COMPROMISSO = {
+  marcado: 'Marcado',
+  treino: 'Pendente montar o treino',
+  plano: 'Pendente enviar o plano',
+  feito: 'Realizado',
+  cancelado: 'Cancelado',
+};
+const STATUS_COMPROMISSO = ['marcado', 'treino', 'plano', 'feito', 'cancelado'];
 
 // Objetivos ficam no banco: o Luca cria e renomeia em Configurações.
 let OBJETIVOS = ['Emagrecimento', 'Definição muscular', 'Ganho de massa muscular', 'Manutenção do peso'];
@@ -293,6 +305,7 @@ async function telaHome() {
     </div>`;
 
   $('#tela').innerHTML = `
+    <div id="formNovos"></div>
     <div class="topo">
       <div><h1>Início</h1><p>${new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric', timeZone: 'America/Sao_Paulo' })}</p></div>
       <div class="dir">
@@ -343,6 +356,46 @@ async function telaHome() {
           <button class="btn mini" onclick="abrirConsulta(${f.id})">Nova ficha</button>
         </div>`, 'Acompanhamento em dia.')}
     </div>`;
+
+  pintarFormulariosNovos();
+}
+
+/* ---------- formulário recém-preenchido, esperando o ok ----------
+   Quando um paciente responde a anamnese, a ficha não entra no fluxo
+   sozinha: fica em destaque no topo do Início até o Luca conferir e
+   liberar. É a primeira coisa que ele vê ao abrir o sistema. */
+async function pintarFormulariosNovos() {
+  const alvo = $('#formNovos');
+  if (!alvo) return;
+  let d;
+  try { d = await api('/anamneses/novas'); } catch { return; }
+  const l = d.linhas || [];
+  if (!l.length) { alvo.innerHTML = ''; return; }
+  alvo.innerHTML = `
+    <div class="card novo-form">
+      <h3>Formulário novo
+        <span class="tag" style="margin-left:6px">${l.length}</span>
+        <small style="font-weight:500;color:var(--txt-2);margin-left:8px">
+          respondido agora, esperando o seu ok</small></h3>
+      ${l.map((a) => `
+        <div class="linha-aviso">
+          <span class="tag hoje">${a.respondido_em ? dataBR(a.respondido_em) : 'hoje'}</span>
+          <div class="txt">
+            <b>${esc(a.nome || a.paciente_nome || 'sem nome')}
+              ${a.cod ? `<span class="cod">COD ${esc(a.cod)}</span>` : ''}</b>
+            <small>${esc(a.email || '')}${a.origem ? ' · formulário ' + esc(a.origem) : ''}</small></div>
+          ${a.paciente_id ? `<button class="btn mini ghost"
+            onclick="abrirPaciente(${a.paciente_id},'anamnese')">Ver respostas</button>` : ''}
+          <button class="btn mini ouro" onclick="liberarAnamnese(${a.id})">Liberar</button>
+        </div>`).join('')}
+    </div>`;
+}
+
+async function liberarAnamnese(id) {
+  try { await api('/anamneses/' + id + '/liberar', { method: 'POST', body: {} }); }
+  catch (e) { return toast(e.message); }
+  toast('Formulário liberado');
+  pintarFormulariosNovos();
 }
 
 /* ---------- pré-cadastro de venda ----------
@@ -1284,7 +1337,10 @@ function modal(titulo, corpo, pe = '', opt = {}) {
       <div class="modal-corpo">${corpo}</div>
       ${pe ? `<div class="modal-pe">${pe}</div>` : ''}
     </div>`;
-  el.onclick = (e) => { if (e.target === el) fecharModal(); };
+  /* Em tela de trabalho longo (ficha de consulta), clicar fora não fecha.
+     O aviso do navegador é fácil de aceitar sem ler, e já custou call
+     inteira: a saída tem que ser por Cancelar ou Salvar, de propósito. */
+  if (!opt.fundoNaoFecha) el.onclick = (e) => { if (e.target === el) fecharModal(); };
   document.body.appendChild(el);
   return el;
 }
@@ -1377,9 +1433,31 @@ async function editarAlertas(pacienteId) {
   };
 }
 
-function blocoEnergia(p, ficha) {
-  const tmb = ficha && ficha.tmb ? Number(ficha.tmb) : null;
-  const get = ficha && ficha.get_kcal ? Number(ficha.get_kcal) : null;
+/* Calcula TMB e gasto a partir do próprio cadastro, sem depender de ficha de
+   consulta. A maioria dos pacientes nunca teve ficha com TMB gravado, e sem
+   isso a tela ficava em branco justamente onde o número importa. */
+function energiaDoCadastro(p, pesoKg) {
+  const kg = Number(pesoKg) || null;
+  const cm = Number(p.altura_cm) || null;
+  const idade = idadePor(p.nascimento);
+  if (!kg || !cm || !idade) {
+    return { falta: [!kg && 'peso', !cm && 'altura', !idade && 'nascimento'].filter(Boolean) };
+  }
+  const fs = fatores(p.sexo || 'F');
+  const f = (fs[Math.min(1, fs.length - 1)] || {}).fator || 1.55;
+  const tmb = tmbHarrisBenedict(p.sexo || 'F', kg, cm, idade);
+  return { tmb, get: tmb * f, fator: f, idade, kg, semSexo: !p.sexo };
+}
+
+function blocoEnergia(p, ficha, pesoAtual) {
+  let tmb = ficha && ficha.tmb ? Number(ficha.tmb) : null;
+  let get = ficha && ficha.get_kcal ? Number(ficha.get_kcal) : null;
+  let estimado = null;
+  if (!tmb && !get) {
+    const e = energiaDoCadastro(p, pesoAtual ?? p.peso_inicial_kg);
+    if (e.tmb) { tmb = e.tmb; get = e.get; estimado = e; }
+    else estimado = e;
+  }
   const s = saldoCalorico(p.dieta_kcal, get);
   const quando = ficha && ficha.data ? ` · da ficha de ${dataBR(ficha.data)}` : '';
   return `
@@ -1400,9 +1478,16 @@ function blocoEnergia(p, ficha) {
           : get ? 'Preencha as calorias da dieta.'
           : 'Sem gasto energético ainda — preencha peso e altura numa ficha de consulta.')}</small>
       </div>
-      <div class="obs"><span>${tmb || get
-        ? `Calculado na última consulta${quando}. Peso novo muda esses números.`
-        : 'Os números aparecem assim que houver uma ficha de consulta com peso e altura.'}</span></div>
+      <div class="obs"><span>${
+        estimado && estimado.tmb
+          ? `Estimado pelo cadastro: ${estimado.kg} kg, ${p.altura_cm} cm, ${estimado.idade} anos`
+            + ` · Harris-Benedict × ${estimado.fator}`
+            + (estimado.semSexo ? ' · <b style="color:var(--alerta)">sem o sexo no cadastro, usou a tabela feminina</b>' : '')
+          : estimado && estimado.falta && estimado.falta.length
+            ? `Falta ${estimado.falta.join(', ')} no cadastro para calcular.`
+          : tmb || get
+            ? `Calculado na última consulta${quando}. Peso novo muda esses números.`
+            : 'Os números aparecem assim que houver uma ficha de consulta com peso e altura.'}</span></div>
     </div>`;
 }
 
@@ -1469,7 +1554,7 @@ async function abrirPaciente(id, aba) {
             ${dif != null ? `<small style="color:${dif < 0 ? 'var(--ok)' : 'var(--alerta)'};font-size:13px"> ${dif > 0 ? '+' : ''}${dif.toFixed(1)} kg</small>` : ''}</b></div>
       </div>
 
-      ${blocoEnergia(p, ultimaFicha)}
+      ${blocoEnergia(p, ultimaFicha, ultimo ?? p.peso_inicial_kg)}
       <div class="card" style="margin-bottom:12px">
         <div class="grid g2" style="gap:8px">
           ${[['Código', p.cod], ['Apelido', p.apelido], ['País', p.pais], ['Telefone', p.telefone],
@@ -1478,15 +1563,24 @@ async function abrirPaciente(id, aba) {
              ['Nascimento', p.nascimento ? `${dataBR(p.nascimento)} (${idadePor(p.nascimento) || '?'} anos)` : ''],
              ['Sexo', p.sexo === 'M' ? 'Masculino' : p.sexo === 'F' ? 'Feminino' : ''],
              ['Altura', p.altura_cm ? p.altura_cm + ' cm' : ''],
+             ['Peso inicial', p.peso_inicial_kg
+               ? `${fmtPeso(p.peso_inicial_kg)}${p.inicio_em ? ' · desde ' + dataBR(p.inicio_em) : ''}`
+               : ''],
              ['Profissão', p.profissao]]
             .map(([k, v]) => `<div><label>${k}</label><div>${esc(v || '—')}</div></div>`).join('')}
         </div>
         ${p.obs ? `<div style="margin-top:10px"><label>Observações</label><div>${esc(p.obs)}</div></div>` : ''}
+        ${p.cods_antigos || p.nomes_antigos ? `<div style="margin-top:10px">
+          <label>Cadastros unidos neste</label>
+          <div class="dica" style="margin:2px 0 0">${
+            [p.cods_antigos ? 'COD ' + esc(p.cods_antigos) : '',
+              p.nomes_antigos ? esc(p.nomes_antigos) : ''].filter(Boolean).join(' · ')
+          }</div></div>` : ''}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn" onclick="abrirConsulta(${p.id})">+ Ficha de consulta</button>
         <button class="btn ouro" onclick="abrirCalculadora(${p.id})">Calcular metabolismo</button>
-        <button class="btn ghost" onclick="formPaciente(${p.id})">Editar cadastro</button>
+        <button class="btn ghost" onclick="formPaciente(${p.id},1)">Editar cadastro</button>
         <button class="btn ghost" onclick="abrirContrato(${p.id})">+ Contrato</button>
         <button class="btn zap" onclick="waEnviar(${p.id})">WhatsApp</button>
         <button class="btn ghost" onclick="linkAnamnese(${p.id})">Mandar anamnese</button>
@@ -1536,12 +1630,8 @@ async function abrirPaciente(id, aba) {
     </div>
 
     <div data-p="anamnese" class="hide">
-      ${!d.anamnese ? '<p class="vazio">Nenhuma anamnese vinculada a este paciente.</p>' :
-        `<div class="card"><small style="color:var(--txt-2)">Respondido em ${dataBR(d.anamnese.respondido_em)} · origem ${esc(d.anamnese.origem)}</small>
-        <div style="margin-top:10px">${Object.entries(JSON.parse(d.anamnese.dados || '{}'))
-          .filter(([, v]) => v !== null && v !== '' && String(v) !== 'nan')
-          .map(([k, v]) => `<div style="padding:7px 0;border-bottom:1px solid var(--linha)">
-            <label style="margin:0">${esc(k)}</label><div>${esc(v)}</div></div>`).join('')}</div></div>`}
+      ${!d.anamnese ? '<p class="vazio">Nenhuma anamnese vinculada a este paciente.</p>'
+        : blocoAnamnese(d.anamnese, p, ultimo ?? p.peso_inicial_kg)}
     </div>`;
 
   modal(nomeCompleto(p), corpo);
@@ -1558,6 +1648,54 @@ async function abrirPaciente(id, aba) {
     const alvo = $(`#abasPac button[data-a="${aba}"]`);
     if (alvo) alvo.click();
   }
+}
+
+/* ---------- a resposta da anamnese, pronta para montar o WebDiet ----------
+   No WebDiet ele digita idade, peso e altura em unidade americana. Os três
+   ficam no topo, já convertidos, para ele não precisar converter na mão nem
+   caçar o valor no meio das 40 respostas. */
+const POL_POR_CM = 1 / 2.54;
+function emPesInch(cm) {
+  const t = Number(cm) * POL_POR_CM;
+  if (!t) return '—';
+  const pes = Math.floor(t / 12);
+  return `${pes}' ${(t - pes * 12).toFixed(1)}"`;
+}
+/* A resposta do formulário guarda a data como o Google mandou (2004-02-10 ou
+   com hora junto). Na tela sai no formato que ele lê. */
+function dataResposta(v) {
+  const s = String(v == null ? '' : v).trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return s;
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+const PARECE_DATA = /^\d{4}-\d{2}-\d{2}([T ]|$)/;
+
+function blocoAnamnese(a, p, pesoKg) {
+  const dados = (() => { try { return JSON.parse(a.dados || '{}'); } catch { return {}; } })();
+  const idade = idadePor(p.nascimento);
+  const kg = Number(pesoKg) || null;
+  const cm = Number(p.altura_cm) || null;
+  return `
+    <div class="kpi-tmb" style="margin-bottom:12px">
+      <div><span>Idade</span><b>${idade ? idade + ' anos' : '—'}</b></div>
+      <div><span>Peso</span><b>${kg ? `${kg} kg` : '—'}
+        <small style="font-size:12px;color:var(--txt-2);font-weight:400">
+          ${kg ? ` · ${(kg / KG_POR_LB).toFixed(1)} lbs` : ''}</small></b></div>
+      <div><span>Altura</span><b>${cm ? `${cm} cm` : '—'}
+        <small style="font-size:12px;color:var(--txt-2);font-weight:400">
+          ${cm ? ` · ${emPesInch(cm)}` : ''}</small></b></div>
+      <div class="obs"><span>Formulário enviado em
+        <b>${a.respondido_em ? dataBR(a.respondido_em) : '—'}</b> · origem ${esc(a.origem || '—')}
+        ${a.criado_em || a.created_at ? ` · registrado em ${dataBR(String(a.criado_em || a.created_at).slice(0, 10))}` : ''}</span></div>
+    </div>
+    <div class="card">
+      <div>${Object.entries(dados)
+        .filter(([, v]) => v !== null && v !== '' && String(v) !== 'nan')
+        .map(([k, v]) => `<div style="padding:7px 0;border-bottom:1px solid var(--linha)">
+          <label style="margin:0">${esc(k)}</label>
+          <div>${esc(PARECE_DATA.test(String(v)) ? dataResposta(v) : v)}</div></div>`).join('')}</div>
+    </div>`;
 }
 
 /* ---------- link do formulário de anamnese para um paciente ---------- */
@@ -1584,10 +1722,14 @@ async function linkAnamnese(pacienteId) {
 }
 
 /* ---------- cadastro / edição de paciente ---------- */
-async function formPaciente(id) {
+async function formPaciente(id, voltarPraFicha) {
   let p = { status: 'ativo', pais: 'Brasil' };
   if (id) p = (await api('/pacientes/' + id)).paciente;
-  const objs = String(p.objetivo || '').split(',').map((s) => s.trim());
+  const objs = String(p.objetivo || '').split(',').map((s) => s.trim()).filter(Boolean);
+  /* O objetivo que veio da anamnese nem sempre é uma das quatro caixinhas —
+     tem "Emagrecimento/ Definição muscular" e tem resposta em inglês. Sem
+     entrar na lista, a caixinha não existia e salvar apagava o valor. */
+  const listaObjs = [...new Set([...objs, ...OBJETIVOS])];
 
   const corpo = `
     <div class="grid g2">
@@ -1612,17 +1754,33 @@ async function formPaciente(id) {
       <div><label>Instagram</label><input id="pInsta" value="${esc(p.instagram || '')}"></div>
       <div><label>Data de nascimento</label><input id="pNasc" type="date" value="${esc(p.nascimento || '')}"></div>
       <div><label>Profissão</label><input id="pProf" value="${esc(p.profissao || '')}"></div>
+      ${campoPeso('pPesoIni', 'pPesoIniLb', p.peso_inicial_kg ?? null, 'Peso inicial')}
+      <div><label>Início do processo</label>
+        <input id="pInicio" type="date" value="${esc(p.inicio_em || '')}">
+        <small style="display:block;font-size:12px;color:var(--txt-2);margin-top:4px">
+          A data de onde a evolução de peso parte.</small></div>
+    </div>
+
+    <div class="kpi-tmb" id="pBlocoTmbNovo" style="margin-top:12px">
+      <div><span>Metabolismo basal (TMB)</span><b id="pTmbNovo">—</b></div>
+      <div><span>Gasto energético total</span><b id="pGetNovo">—</b></div>
+      <div class="obs"><span id="pTmbNovoNota">Preencha sexo, altura, nascimento e peso inicial.</span></div>
     </div>
     <div style="margin-top:10px"><label>Objetivo</label>
       <div style="display:flex;gap:12px;flex-wrap:wrap">
-        ${OBJETIVOS.map((o) => `<label style="display:flex;gap:6px;align-items:center;font-weight:500;color:var(--txt)">
-          <input type="checkbox" class="objChk" value="${o}" style="width:auto"${objs.includes(o) ? ' checked' : ''}> ${o}</label>`).join('')}
+        ${listaObjs.map((o) => `<label style="display:flex;gap:6px;align-items:center;font-weight:500;color:var(--txt)">
+          <input type="checkbox" class="objChk" value="${esc(o)}" style="width:auto"${objs.includes(o) ? ' checked' : ''}> ${esc(o)}</label>`).join('')}
       </div></div>
     <div class="grid g2" style="margin-top:10px">
       <div><label>Indicado por</label><input id="pInd" value="${esc(p.indicacao || '')}"></div>
       <div><label>CPF</label><input id="pCpf" value="${esc(p.cpf || '')}"></div>
     </div>
     <div style="margin-top:10px"><label>Endereço</label><input id="pEnd" value="${esc(p.endereco || '')}"></div>
+    <div style="margin-top:10px"><label>Alergia, intolerância, o que não come</label>
+      <textarea id="pAlertas" placeholder="uma por linha — aparece em vermelho na ficha e na consulta"
+        >${esc(p.alertas || '')}</textarea>
+      <small style="display:block;font-size:12px;color:var(--txt-2);margin-top:4px">
+        O que vier da anamnese continua aparecendo junto. Aqui é o que você mesmo anota.</small></div>
     <div style="margin-top:10px"><label>Observações</label><textarea id="pObs">${esc(p.obs || '')}</textarea></div>`;
 
   modal(id ? 'Editar paciente' : 'Novo paciente', corpo, `
@@ -1630,7 +1788,24 @@ async function formPaciente(id) {
     <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
     <button class="btn ouro" id="salvarPac">Salvar</button>`);
 
-  ligarAltura('pAltura', 'pAltPes', 'pAltPol');
+  /* TMB e gasto já no cadastro: ele vê o número enquanto digita e percebe na
+     hora quando falta sexo ou nascimento, em vez de descobrir na consulta. */
+  const pintarTmbCadastro = () => {
+    const sim = { sexo: $('#pSexo').value, altura_cm: $('#pAltura').value,
+      nascimento: $('#pNasc').value };
+    const e = energiaDoCadastro(sim, $('#pPesoIni').value);
+    $('#pTmbNovo').textContent = e.tmb ? fmtKcal(e.tmb) : '—';
+    $('#pGetNovo').textContent = e.get ? fmtKcal(e.get) : '—';
+    $('#pTmbNovoNota').innerHTML = e.tmb
+      ? `${e.kg} kg, ${sim.altura_cm} cm, ${e.idade} anos · Harris-Benedict × ${e.fator}`
+        + (e.semSexo ? ' · <b style="color:var(--alerta)">sem o sexo, usou a tabela feminina</b>' : '')
+      : `Falta ${(e.falta || []).join(', ')} para calcular.`;
+  };
+  ligarAltura('pAltura', 'pAltPes', 'pAltPol', pintarTmbCadastro);
+  ligarPeso('pPesoIni', 'pPesoIniLb', pintarTmbCadastro);
+  $('#pSexo').onchange = pintarTmbCadastro;
+  $('#pNasc').onchange = pintarTmbCadastro;
+  pintarTmbCadastro();
   ligarCidadeFuso('pCidade', 'pPais', 'pFuso', 'pFusoAviso');
   const liberar = travarSeMexer(AVISO_SAIR('o cadastro'));
 
@@ -1644,12 +1819,20 @@ async function formPaciente(id) {
       indicacao: $('#pInd').value.trim(), cpf: $('#pCpf').value.trim(),
       endereco: $('#pEnd').value.trim(), obs: $('#pObs').value.trim(), status: $('#pStatus').value,
       sexo: $('#pSexo').value || null, altura_cm: $('#pAltura').value || null,
+      alertas: $('#pAlertas').value,
+      peso_inicial_kg: $('#pPesoIni').value || null,
+      inicio_em: $('#pInicio').value || null,
     };
     if (!body.nome) return toast('Informe o nome.');
     try {
       if (id) await api('/pacientes/' + id, { method: 'PUT', body });
       else await api('/pacientes', { method: 'POST', body });
-      liberar(); fecharModal(true); toast('Paciente salvo'); if (TELA === 'pacientes') carregarPacientes(true); else telaHome();
+      liberar(); fecharModal(true); toast('Paciente salvo');
+      CACHE.pacientes = null;
+      /* Veio da ficha: reabre a ficha com o dado novo. Antes caía na lista e
+         parecia que não tinha salvado, porque a tela mostrava o valor velho. */
+      if (voltarPraFicha && id) { abrirPaciente(id); return; }
+      if (TELA === 'pacientes') carregarPacientes(true); else telaHome();
     } catch (e) { toast(e.message); }
   };
 }
@@ -1855,6 +2038,9 @@ function linhaRefeicao(r, i) {
     <div class="refeicao${treino ? ' e-treino' : ''}" data-ord data-tipo="${treino ? 'treino' : 'refeicao'}" data-ref="${i}">
       <div class="rot">
         <span class="ord-pega" title="Arraste para mudar a ordem">⋮⋮</span>
+        <button type="button" class="refFeito${r.feito ? ' on' : ''}"
+          title="Marcar quando esta parte já estiver no WebDiet"
+          aria-pressed="${r.feito ? 'true' : 'false'}"></button>
         <input class="refNome" value="${esc(r.nome)}" placeholder="${treino ? 'treino' : 'nome da refeição'}">
         <input class="refHora" type="time" value="${esc(r.hora || '')}" title="Horário">
         <button type="button" class="btn mini ghost refTirar" title="Remover">×</button>
@@ -1869,6 +2055,14 @@ function pintarRefeicoes() {
   $$('#refLista .refTirar').forEach((b, i) => {
     b.onclick = () => { lerRefeicoes(); REF_ATUAIS.splice(i, 1); pintarRefeicoes(); };
   });
+  /* Clicar na bolinha marca que aquela parte já foi para o WebDiet. Não
+     repinta a lista: repintar perderia o que ele está digitando ao lado. */
+  $$('#refLista .refFeito').forEach((b) => {
+    b.onclick = () => {
+      const on = b.classList.toggle('on');
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    };
+  });
   listaOrdenavel(lista, lerRefeicoes);
 }
 
@@ -1879,6 +2073,7 @@ function lerRefeicoes() {
     nome: $('.refNome', el).value.trim(),
     hora: $('.refHora', el).value,
     texto: $('.refTexto', el).value,
+    feito: $('.refFeito', el).classList.contains('on') ? 1 : 0,
   }));
 }
 
@@ -1959,8 +2154,18 @@ async function abrirConsulta(pacienteId, consultaId) {
   const objetivoAtual = c.objetivo || p.objetivo || '';
   const listaObj = [...new Set([...OBJETIVOS, ...String(objetivoAtual).split(',').map((s) => s.trim())])]
     .filter(Boolean);
+  /* A tabela de fatores é diferente por sexo (homem Leve=1.56, mulher 1.55).
+     Uma ficha gravada antes de o sexo ser preenchido guarda um fator que não
+     existe na tabela nova — e aí nenhuma opção ficava marcada, o navegador
+     mostrava a primeira (Sedentário) e o GET despencava. Quando o valor
+     gravado não está na tabela, ele entra como opção própria. */
   const fs = fatores(p.sexo || 'F');
-  const fatorAtual = c.fator_atividade || (fs[Math.min(1, fs.length - 1)] || {}).fator || 1.55;
+  const fatorAtual = Number(c.fator_atividade)
+    || (fs[Math.min(1, fs.length - 1)] || {}).fator || 1.55;
+  const listaFatores = fs.some((f) => f.fator === fatorAtual)
+    ? fs
+    : [...fs, { nome: 'Gravado nesta ficha', fator: fatorAtual }]
+      .sort((a, b) => a.fator - b.fator);
 
   const corpo = `
     <div class="caderno">
@@ -2009,9 +2214,11 @@ async function abrirConsulta(pacienteId, consultaId) {
           <small style="display:block;font-size:12px;color:var(--txt-2);margin-top:4px">
             Trocar aqui atualiza o objetivo do paciente.</small></div>
         <div><label>Nível de atividade</label>
-          <select id="cFator">${fs.map((f) => `<option value="${f.fator}"${
-            Number(fatorAtual) === f.fator ? ' selected' : ''}>${esc(f.nome)} (${f.fator})</option>`).join('')}
-          </select></div>
+          <select id="cFator">${listaFatores.map((f) => `<option value="${f.fator}"${
+            fatorAtual === f.fator ? ' selected' : ''}>${esc(f.nome)} (${f.fator})</option>`).join('')}
+          </select>
+          ${p.sexo ? '' : `<small style="display:block;font-size:12px;color:var(--alerta);margin-top:4px">
+            Sem o sexo no cadastro, a tabela usada é a feminina — e o TMB sai errado para homem.</small>`}</div>
       </div>
 
       <div class="kpi-tmb" id="cBlocoTmb">
@@ -2048,7 +2255,7 @@ async function abrirConsulta(pacienteId, consultaId) {
     <button class="btn ghost" onclick="calculadoraDaFicha(${pacienteId})">Calculadora</button>
     <button class="btn ghost" onclick="window.print()">Imprimir</button>
     <button class="btn ghost" onclick="fecharModal()">Cancelar</button>
-    <button class="btn ouro" id="salvarCons">Salvar ficha</button>`);
+    <button class="btn ouro" id="salvarCons">Salvar ficha</button>`, { fundoNaoFecha: true });
 
   pintarRefeicoes();
 
@@ -2194,7 +2401,13 @@ async function abrirContrato(pacienteId) {
       <div><label>Término</label><input id="kFim" type="date"></div>
       <div><label>Moeda</label><select id="kMoeda">${MOEDAS.map((m) => `<option>${m}</option>`).join('')}</select></div>
       <div><label>Valor total cobrado</label><input id="kValor" type="number" step="0.01"></div>
+      <div><label>Desconto do app</label><input id="kDesc" type="number" step="0.01" placeholder="0,00">
+        <small style="display:block;font-size:12px;color:var(--txt-2);margin-top:4px">
+          O que o app retém. Sai do valor das parcelas.</small></div>
       <div><label>Parcelas</label><input id="kParc" type="number" min="1" value="1"></div>
+      <div><label>Equivalente a receber</label>
+        <input id="kLiquido" readonly tabindex="-1"
+          style="font-weight:650;background:var(--fundo-2);cursor:default"></div>
     </div>
     <div style="margin-top:10px"><label>Observações</label><input id="kObs"></div>
     <p style="font-size:12.5px;color:var(--txt-2);margin:10px 0 0">
@@ -2214,13 +2427,29 @@ async function abrirContrato(pacienteId) {
     const preco = m === 'USD' ? op.dataset.usd : op.dataset.brl;
     if (Number(preco) > 0) $('#kValor').value = preco;
   };
-  $('#kPlano').onchange = sincroniza;
+  /* Mostra na hora quanto sobra depois do desconto do app, e quanto fica em
+     cada parcela — é esse número que ele confere contra o extrato. */
+  const pintarLiquido = () => {
+    const v = Number($('#kValor').value) || 0;
+    const d = Number($('#kDesc').value) || 0;
+    const q = Math.max(1, Number($('#kParc').value) || 1);
+    const liq = Math.max(0, v - d);
+    const m = $('#kMoeda').value === 'USD' ? 'US$' : $('#kMoeda').value === 'BRL' ? 'R$' : '';
+    $('#kLiquido').value = !v ? ''
+      : `${m} ${liq.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
+        + (q > 1 ? `  (${q}× ${m} ${(liq / q).toLocaleString('pt-BR',
+          { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : '');
+  };
+  $('#kPlano').onchange = () => { sincroniza(); pintarLiquido(); };
   $('#kIni').onchange = sincroniza;
   $('#kForma').onchange = () => {
     const m = { pix: 'BRL', asaas: 'BRL', infinity: 'BRL', zelle: 'USD', paypal: 'USD' }[$('#kForma').value];
     if (m) { $('#kMoeda').value = m; sincroniza(); }
+    pintarLiquido();
   };
-  $('#kMoeda').onchange = sincroniza;
+  $('#kMoeda').onchange = () => { sincroniza(); pintarLiquido(); };
+  ['kValor', 'kDesc', 'kParc'].forEach((k) => { $('#' + k).oninput = pintarLiquido; });
+  pintarLiquido();
 
   $('#salvarCon').onclick = async () => {
     try {
@@ -2228,6 +2457,7 @@ async function abrirContrato(pacienteId) {
         paciente_id: pacienteId, plano_id: $('#kPlano').value || null,
         data_inicial: $('#kIni').value, data_final: $('#kFim').value,
         valor_cobrado: $('#kValor').value, moeda: $('#kMoeda').value, forma: $('#kForma').value,
+        desconto: $('#kDesc').value || null,
         qtd_parcelas: $('#kParc').value, obs: $('#kObs').value } });
       fecharModal(); toast('Contrato criado'); abrirPaciente(pacienteId);
     } catch (e) { toast(e.message); }
@@ -2354,7 +2584,7 @@ async function telaAgenda() {
     <div class="topo">
       <div><h1>Agenda</h1>
         <p style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
-          ${['marcado', 'feito', 'cancelado'].map((s) => `<span style="display:inline-flex;align-items:center;gap:5px">
+          ${STATUS_COMPROMISSO.map((s) => `<span style="display:inline-flex;align-items:center;gap:5px">
             <i style="width:10px;height:10px;border-radius:3px;background:${CORES_COMPROMISSO[s].borda};display:inline-block"></i>
             ${ROTULO_COMPROMISSO[s]}</span>`).join('')}
           <span style="color:var(--txt-2)">· dois cliques num dia criam um compromisso</span>
@@ -2424,8 +2654,12 @@ function ligarBuscaPaciente(base, aoEscolher) {
       if (semAcento(p.apelido).startsWith(t)) return 3;
       return 4;
     };
+    /* Cadastro unido: o nome e o COD velhos continuam achando a pessoa,
+       porque é por eles que o Luca lembra de muita gente. */
+    const procurado = (p) => semAcento(rotuloPaciente(p)
+      + ' ' + (p.cods_antigos || '') + ' ' + (p.nomes_antigos || ''));
     return todos
-      .filter((p) => semAcento(rotuloPaciente(p)).includes(t))
+      .filter((p) => procurado(p).includes(t))
       .sort((a, b) => pontos(a) - pontos(b) || String(a.nome).localeCompare(String(b.nome)))
       .slice(0, 40);
   };
@@ -2494,7 +2728,7 @@ async function abrirCompromisso(id, dia) {
           color:var(--navy-3);margin-top:4px"></small></div>
       <div><label>Local / link</label><input id="mLocal" value="${esc(c.local || '')}"></div>
       <div><label>Situação</label><select id="mSt">
-        ${['marcado', 'feito', 'cancelado'].map((s) => `<option value="${s}"${c.status === s ? ' selected' : ''}>${ROTULO_COMPROMISSO[s]}</option>`).join('')}</select></div>
+        ${STATUS_COMPROMISSO.map((s) => `<option value="${s}"${c.status === s ? ' selected' : ''}>${ROTULO_COMPROMISSO[s]}</option>`).join('')}</select></div>
     </div>
     <div style="margin-top:10px"><label>Observações</label><textarea id="mObs">${esc(c.obs || '')}</textarea></div>`;
 
@@ -3737,6 +3971,18 @@ async function telaConfig() {
       </div>
 
       <div class="card">
+        <h3>Backup e cadastros repetidos</h3>
+        <p style="font-size:13px;color:var(--txt-2);margin:6px 0 12px">
+          O backup traz as tabelas de dados num arquivo só. Senha e token de
+          sessão nunca saem nele.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn" id="btnBackup">Baixar backup do banco</button>
+          <button class="btn ghost" onclick="telaUnificar()">Unificar cadastros</button>
+        </div>
+        <div id="backupRes" style="font-size:13px;margin-top:10px;color:var(--txt-2)"></div>
+      </div>
+
+      <div class="card">
         <h3>Importar dados</h3>
         <p style="font-size:13px;color:var(--txt-2);margin:6px 0 12px">
           Escolha o arquivo JSON da planilha atual ou das respostas do formulário.
@@ -3843,6 +4089,241 @@ async function telaConfig() {
       res.innerHTML = `<b style="color:var(--erro)">Erro:</b> ${esc(e.message)}`;
     } finally { btn.disabled = false; }
   };
+
+  /* O arquivo é montado aqui no navegador a partir do JSON da API: assim o
+     download leva o token da sessão junto e não existe endereço público de
+     backup. Sem estar logado, ninguém baixa. */
+  $('#btnBackup').onclick = async () => {
+    const bt = $('#btnBackup'); const res = $('#backupRes');
+    bt.disabled = true; res.textContent = 'Montando o arquivo…';
+    try {
+      const d = await api('/exportar');
+      const nome = `crm-luca-backup-${hojeISO()}.json`;
+      const blob = new Blob([JSON.stringify(d, null, 1)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = nome;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      const total = Object.values(d.contagem || {}).reduce((s, n) => s + n, 0);
+      res.innerHTML = `<b style="color:var(--ok)">Baixado:</b> ${esc(nome)} · `
+        + `${total} registros em ${Object.keys(d.contagem || {}).length} tabelas`
+        + (d.tabelas_faltando && d.tabelas_faltando.length
+          ? ` · <span style="color:var(--alerta)">sem ${d.tabelas_faltando.join(', ')}</span>` : '');
+    } catch (e) {
+      res.innerHTML = `<b style="color:var(--erro)">Erro:</b> ${esc(e.message)}`;
+    } finally { bt.disabled = false; }
+  };
+}
+
+/* ==========================================================
+   UNIFICAR CADASTROS
+   Nada vem marcado de propósito. Na base real existem mãe e filha com o
+   mesmo CPF, telefone e e-mail, e existe o mesmo COD em formulários
+   diferentes: prova forte não é garantia de ser a mesma pessoa.
+   ========================================================== */
+let UNIAO = { grupos: [], escolhidos: new Set(), previa: {} };
+const ROTULO_PROVA = { cpf: 'mesmo CPF', email: 'mesmo e-mail',
+  telefone: 'mesmo telefone', cod_pais: 'mesmo COD e país' };
+const ROTULO_CAMPO = { nome: 'Nome', apelido: 'Apelido', email: 'E-mail',
+  telefone: 'Telefone', instagram: 'Instagram', nascimento: 'Nascimento', cpf: 'CPF',
+  profissao: 'Profissão', endereco: 'Endereço', cidade: 'Cidade', pais: 'País',
+  objetivo: 'Objetivo', sexo: 'Sexo', altura_cm: 'Altura', indicacao: 'Indicado por',
+  status: 'Situação', obs: 'Observações', alertas: 'Alergias' };
+
+async function telaUnificar() {
+  TELA = 'unificar';
+  $('#tela').innerHTML = '<p class="vazio">Procurando cadastros repetidos…</p>';
+  let d;
+  try { d = await api('/unificar/sugestoes'); } catch (e) { return toast(e.message); }
+  UNIAO = { grupos: d.grupos || [], escolhidos: new Set(), previa: {} };
+
+  $('#tela').innerHTML = `
+    <div class="topo">
+      <div><h1>Unificar cadastros</h1>
+        <p>${d.cadastros_envolvidos} cadastros parecem ser ${UNIAO.grupos.length} pessoas,
+          de ${d.total_pacientes} no total${d.com_atencao
+            ? ` · <b style="color:var(--erro)">${d.com_atencao} pedem atenção</b>` : ''}</p></div>
+      <div class="dir">
+        <button class="btn ghost" onclick="telaConfig()">Voltar</button>
+        <button class="btn ouro" id="unAplicar">Unir os marcados</button>
+      </div>
+    </div>
+
+    <div class="aviso-banco">
+      <div><b>Antes de unir, baixe um backup.</b> A união move contratos, pagamentos,
+      consultas e anexos para um cadastro só e apaga os outros. Fica tudo registrado
+      e dá para conferir depois, mas o backup é o que permite voltar atrás de verdade.</div>
+      <button class="btn ghost mini" onclick="telaConfig()">Ir para o backup</button>
+    </div>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center">
+      <button class="btn ghost mini" onclick="marcarUniao('seguros')">Marcar os sem aviso</button>
+      <button class="btn ghost mini" onclick="marcarUniao('todos')">Marcar todos</button>
+      <button class="btn ghost mini" onclick="marcarUniao('nenhum')">Desmarcar todos</button>
+      <span id="unContagem" style="font-size:13px;color:var(--txt-2)"></span>
+    </div>
+    <div id="unLista"></div>`;
+
+  $('#unAplicar').onclick = aplicarUniao;
+  pintarUniao();
+}
+
+function pintarUniao() {
+  const alvo = $('#unLista');
+  if (!UNIAO.grupos.length) {
+    alvo.innerHTML = '<p class="vazio">Nenhum cadastro repetido encontrado. Está tudo único.</p>';
+    $('#unContagem').textContent = '';
+    $('#unAplicar').disabled = true;
+    return;
+  }
+  alvo.innerHTML = UNIAO.grupos.map((g, i) => cartaoUniao(g, i)).join('');
+  const n = UNIAO.escolhidos.size;
+  $('#unContagem').textContent = `${n} de ${UNIAO.grupos.length} marcados`;
+  $('#unAplicar').disabled = !n;
+}
+
+function cartaoUniao(g, i) {
+  const marcado = UNIAO.escolhidos.has(i);
+  const mantido = g.pacientes.find((x) => x.id === g.mantido_id) || g.pacientes[0];
+  const prev = UNIAO.previa[i];
+  return `
+    <div class="card un-grupo${marcado ? ' on' : ''}" data-g="${i}"
+         style="margin-bottom:10px;border-left:4px solid ${g.atencao ? 'var(--erro)' : 'var(--ok)'}">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <label style="display:flex;gap:7px;align-items:center;margin:0;font-weight:600">
+          <input type="checkbox" class="unChk" style="width:auto"${marcado ? ' checked' : ''}
+            onchange="marcarGrupo(${i},this.checked)">
+          ${esc(mantido.nome)}</label>
+        <span style="display:flex;gap:5px;flex-wrap:wrap">
+          ${g.provas.map((pv) => `<span class="tag ${pv.tipo === 'cod_pais' ? '' : 'ativo'}">${
+            ROTULO_PROVA[pv.tipo] || pv.tipo}</span>`).join('')}
+          ${g.atencao ? '<span class="tag devendo">confira</span>' : ''}
+        </span>
+        <button class="btn mini ghost" style="margin-left:auto"
+          onclick="verDivergencias(${i})">${prev ? 'Rever campos' : 'Conferir campos'}</button>
+      </div>
+      ${g.atencao ? `<div class="alertas" style="margin:0 0 10px">
+        <span class="alerta"><i aria-hidden="true">!</i>${esc(g.motivo_atencao)}</span></div>` : ''}
+      <table><thead><tr>
+        <th></th><th>COD</th><th>Nome</th><th>E-mail</th><th>Telefone</th><th>País</th><th>Situação</th>
+      </tr></thead><tbody>
+        ${g.pacientes.map((x) => `<tr>
+          <td>${x.id === g.mantido_id
+            ? '<span class="tag ativo">fica</span>' : '<span class="tag">vira este</span>'}</td>
+          <td>${x.cod ? `<span class="cod">${esc(x.cod)}</span>` : '—'}</td>
+          <td>${esc(x.nome)}${x.apelido ? ` <span class="apelido">“${esc(x.apelido)}”</span>` : ''}</td>
+          <td><small>${esc(x.email || '—')}</small></td>
+          <td><small>${esc(x.telefone || '—')}</small></td>
+          <td><small>${esc(x.pais || '—')}</small></td>
+          <td><span class="tag ${esc(x.status || '')}">${esc(x.status || '—')}</span></td>
+        </tr>`).join('')}
+      </tbody></table>
+      ${prev ? previaUniao(prev, i) : ''}
+    </div>`;
+}
+
+function previaUniao(prev, i) {
+  const m = Object.entries(prev.move || {});
+  const nomeTab = (c) => ({ contratos: 'contratos', parcelas: 'parcelas', pagamentos: 'pagamentos',
+    consultas: 'consultas', anamneses: 'anamneses', anexos: 'anexos',
+    compromissos: 'compromissos', negociacoes: 'negociações', interacoes: 'interações',
+    inbody: 'medições InBody', wa_fila: 'mensagens' }[c] || c);
+  const div = prev.divergencias || [];
+  return `
+    <div style="border-top:1px solid var(--linha);margin-top:10px;padding-top:10px">
+      <p class="dica" style="margin:0 0 8px">
+        ${m.length ? `Vai juntar num cadastro só: ${m.map(([c, n]) => `<b>${n}</b> ${nomeTab(c)}`).join(' · ')}.`
+          : 'Nenhum registro para mover.'}</p>
+      ${!div.length ? '<p class="dica" style="margin:0">Os cadastros não se contradizem em nenhum campo.</p>'
+        : div.map((dv) => `
+        <div style="margin-bottom:10px">
+          <label>${ROTULO_CAMPO[dv.campo] || dv.campo}</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            ${dv.opcoes.map((o, k) => `
+              <label style="display:flex;gap:6px;align-items:flex-start;margin:0;font-weight:400;
+                     border:1px solid var(--linha);border-radius:8px;padding:7px 10px;cursor:pointer">
+                <input type="radio" name="un${i}_${dv.campo}" value="${esc(o.valor)}"
+                  style="width:auto;margin-top:3px"${k === 0 ? ' checked' : ''}
+                  onchange="escolherCampo(${i},'${dv.campo}',this.value)">
+                <span><b>${esc(o.valor)}</b><br>
+                  <small style="color:var(--txt-2)">de ${esc(o.de_nome)}${
+                    o.de_cod ? ' · COD ' + esc(o.de_cod) : ''}</small></span>
+              </label>`).join('')}
+          </div>
+        </div>`).join('')}
+    </div>`;
+}
+
+function marcarGrupo(i, on) {
+  if (on) UNIAO.escolhidos.add(i); else UNIAO.escolhidos.delete(i);
+  const el = $(`.un-grupo[data-g="${i}"]`);
+  if (el) el.classList.toggle('on', on);
+  const n = UNIAO.escolhidos.size;
+  $('#unContagem').textContent = `${n} de ${UNIAO.grupos.length} marcados`;
+  $('#unAplicar').disabled = !n;
+}
+
+function marcarUniao(quais) {
+  UNIAO.escolhidos = new Set();
+  UNIAO.grupos.forEach((g, i) => {
+    if (quais === 'todos' || (quais === 'seguros' && !g.atencao)) UNIAO.escolhidos.add(i);
+  });
+  pintarUniao();
+}
+
+/* A prévia vai ao servidor contar o que será movido e achar as divergências —
+   não dá para adivinhar isso da lista, que só traz o resumo de cada cadastro. */
+async function verDivergencias(i) {
+  const g = UNIAO.grupos[i];
+  let r;
+  try {
+    r = await api('/unificar/previa', { method: 'POST',
+      body: { grupos: [{ ids: g.pacientes.map((x) => x.id), mantido_id: g.mantido_id }] } });
+  } catch (e) { return toast(e.message); }
+  UNIAO.previa[i] = (r.grupos || [])[0] || { move: {}, divergencias: [] };
+  (UNIAO.previa[i].divergencias || []).forEach((dv) => {
+    UNIAO.escolhidos.add(i);
+    escolherCampo(i, dv.campo, dv.opcoes[0].valor);
+  });
+  pintarUniao();
+}
+
+function escolherCampo(i, campo, valor) {
+  UNIAO.grupos[i].escolhas = UNIAO.grupos[i].escolhas || {};
+  UNIAO.grupos[i].escolhas[campo] = valor;
+}
+
+async function aplicarUniao() {
+  const grupos = [...UNIAO.escolhidos].map((i) => ({
+    ids: UNIAO.grupos[i].pacientes.map((x) => x.id),
+    mantido_id: UNIAO.grupos[i].mantido_id,
+    escolhas: UNIAO.grupos[i].escolhas || {},
+  }));
+  if (!grupos.length) return toast('Marque pelo menos um grupo.');
+  const pessoas = grupos.reduce((t, g) => t + g.ids.length, 0);
+  if (!confirm(`Unir ${grupos.length} grupo${grupos.length > 1 ? 's' : ''}, `
+    + `juntando ${pessoas} cadastros.\n\nVocê baixou o backup?`)) return;
+
+  $('#unAplicar').disabled = true;
+  let r;
+  try { r = await api('/unificar', { method: 'POST', body: { grupos } }); }
+  catch (e) { $('#unAplicar').disabled = false; return toast(e.message); }
+
+  CACHE.pacientes = null;
+  modal('Cadastros unidos', `
+    <p style="font-size:14px;margin:0 0 12px">
+      <b>${r.grupos}</b> pessoas ficaram com cadastro único.
+      <b>${r.cadastros_absorvidos}</b> cadastros repetidos foram absorvidos e
+      <b>${r.registros_movidos}</b> registros passaram para o cadastro que ficou.</p>
+    <p class="dica">Lote <code>${esc(r.lote)}</code> — fica registrado no banco,
+      com quem absorveu quem.</p>
+    <table><tbody>
+      ${(r.detalhe || []).map((x) => `<tr>
+        <td><b>${esc(x.nome)}</b></td>
+        <td><small>absorveu ${x.absorvidos.map(esc).join(', ')}</small></td>
+      </tr>`).join('')}
+    </tbody></table>`, `
+    <button class="btn ouro" onclick="fecharModal(true);telaUnificar()">Continuar</button>`);
 }
 
 /* ---------- boot ---------- */
@@ -5060,8 +5541,10 @@ function pintarPerguntas() {
   const comOpcoes = (c) => c.tipo === 'radio' || c.tipo === 'select';
 
   const linhaCampo = (c) => `
-    <div class="card" style="margin-bottom:8px;padding:12px 14px" data-chave="${esc(c.chave)}">
+    <div class="card" style="margin-bottom:8px;padding:12px 14px" data-ord
+         data-chave="${esc(c.chave)}">
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+        <span class="ord-pega" title="Arraste para mudar a ordem">⋮⋮</span>
         <span class="cod">${esc(c.chave)}</span>
         <select class="cTipo" style="width:auto;flex:none;font-size:12.5px;padding:5px 8px"
           ${CHAVES_FIXAS.includes(c.chave) ? 'disabled' : ''}>
@@ -5072,8 +5555,6 @@ function pintarPerguntas() {
         <label style="display:flex;gap:5px;align-items:center;font-weight:500;font-size:12.5px;margin:0">
           <input type="checkbox" class="cAtivo" style="width:auto"${c.ativo ? ' checked' : ''}> no formulário</label>
         <span style="margin-left:auto;display:flex;gap:5px">
-          <button class="btn mini ghost" onclick="moverPergunta('${esc(c.chave)}',-1)" title="Subir">↑</button>
-          <button class="btn mini ghost" onclick="moverPergunta('${esc(c.chave)}',1)" title="Descer">↓</button>
           ${CHAVES_FIXAS.includes(c.chave) ? ''
             : `<button class="btn mini perigo" onclick="excluirPergunta(${c.id},'${esc(c.chave)}')">×</button>`}
         </span>
@@ -5103,8 +5584,9 @@ function pintarPerguntas() {
         </div>
         <input class="bAjuda" data-bloco-ajuda="${esc(b.chave)}" style="margin-bottom:10px;font-size:13px"
           value="${esc(b[`ajuda_${i}`] || '')}" placeholder="linha de apoio do bloco">
-        ${campos.filter((c) => c.bloco_chave === b.chave).map(linhaCampo).join('')
-          || '<p class="vazio">Nenhuma pergunta neste bloco.</p>'}
+        <div class="pg-lista" data-lista="${esc(b.chave)}">${
+          campos.filter((c) => c.bloco_chave === b.chave).map(linhaCampo).join('')
+          || '<p class="vazio">Nenhuma pergunta neste bloco.</p>'}</div>
         <button class="btn ghost mini" onclick="novaPergunta('${esc(b.chave)}')">+ Pergunta neste bloco</button>
       </div>`).join('')}`, `
     <button class="btn ghost" onclick="fecharModal()">Fechar</button>
@@ -5112,6 +5594,22 @@ function pintarPerguntas() {
     <button class="btn ouro" id="pgSalvar">Salvar perguntas</button>`);
 
   $('#pgSalvar').onclick = salvarPerguntas;
+  /* Arrastar pela pega, como nas refeições e nas tarefas. A seta antiga subia
+     uma posição por clique e repintava a lista inteira — para mover uma
+     pergunta cinco lugares ele clicava cinco vezes e se perdia. */
+  $$('.pg-lista').forEach((lista) => listaOrdenavel(lista, () => ordemDasPerguntas(lista)));
+}
+
+/* Lê a ordem que ficou no bloco e renumera só as perguntas dele, mantendo a
+   faixa de posições que o bloco já ocupava. */
+function ordemDasPerguntas(lista) {
+  const chaves = $$('[data-chave]', lista).map((el) => el.dataset.chave);
+  const doBloco = chaves
+    .map((k) => FORM_DADOS.campos.find((c) => c.chave === k))
+    .filter(Boolean);
+  const posicoes = doBloco.map((c) => c.posicao).sort((a, b) => a - b);
+  doBloco.forEach((c, i) => { c.posicao = posicoes[i]; });
+  FORM_DADOS.campos.sort((a, b) => a.posicao - b.posicao);
 }
 
 // lê a tela de volta para o objeto antes de qualquer ação que redesenhe

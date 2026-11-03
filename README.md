@@ -537,6 +537,10 @@ No console do D1, na ordem:
    comandos)
 10. `migrate-10.sql` — alertas alimentares e favorito do plano (quatro
    comandos)
+11. `migrate-11.sql` — peso inicial e data de início do paciente, desconto
+   do app no contrato, liberação do formulário novo, e o rastro de quem
+   foi unido a quem (`cods_antigos`, `nomes_antigos`, `uniao_log`).
+   Nove comandos, um por linha
 
 Se estiver em dúvida sobre quais já rodaram, o próprio sistema diz: ao
 entrar no painel aparece uma faixa amarela no topo nomeando as migrações
@@ -615,8 +619,8 @@ reescritos.
 ### Mandar para quem já pagou
 
 Na ficha do paciente, botão **Mandar anamnese**. Gera um link com token
-daquele paciente: a resposta cai direto na ficha dele, sem criar cadastro
-novo nem abrir negociação no funil. O token vale até ser respondido. O
+daquele paciente: a resposta cai na ficha dele, sem criar cadastro novo nem
+abrir negociação no funil. O token vale até ser respondido. O
 modelo de WhatsApp `anamnese_link` usa a variável `{link_anamnese}`.
 
 Quem preenche entra como **lead** no funil, etapa "chegou no direct", com
@@ -627,6 +631,122 @@ sem paciente duplicado e sem segunda negociação aberta.
 
 Título, texto de abertura e mensagem de agradecimento saem de
 Configurações. São em português: em inglês a página usa os textos padrão.
+
+## Formulário novo espera o ok
+
+Toda anamnese respondida entra como **esperando liberação**, inclusive a de
+link com token. Na tela inicial, acima de tudo, aparece um cartão de borda
+dourada **Formulário novo** com quem respondeu, quando, e dois caminhos:
+**Ver** abre a ficha, **Liberar** solta a anamnese no fluxo normal. Enquanto
+não é liberada ela já está na ficha e já pode ser lida — o que o ok muda é
+o destaque: cartão liberado sai da tela inicial.
+
+O nome do pré-cadastro não atropela mais o nome real. Quem foi cadastrado na
+venda com um apelido ("Jo da call", "Isa 1") recebe o nome que a própria
+pessoa escreveu no formulário, e o nome antigo desce para o campo apelido,
+para a busca continuar achando. Nome que já era de gente (não um provisório)
+só é trocado se a resposta veio pelo link com token daquele paciente.
+
+## Ficha de consulta: não se perde call
+
+Clicar fora da ficha de consulta não fecha mais nada. A saída é por
+**Cancelar** ou **Salvar**, de propósito: o aviso do navegador é fácil de
+aceitar sem ler e já custou registro de call inteira.
+
+A linha de nome e alergia fica **colada no topo** enquanto a ficha rola, para
+a alergia não sair de vista no meio do plano.
+
+Ao lado de cada título (treino, café da manhã, ceia…) tem uma **bolinha**:
+clicada, fica verde e fica gravada. É o "já atualizei isso no WebDiet", sem
+precisar de anotação à parte. Clicar na bolinha não redesenha a tela, então
+não atrapalha o que está sendo escrito.
+
+## TMB e GET
+
+Aparecem em três lugares, com a mesma conta (Harris-Benedict):
+
+- no cadastro, enquanto você digita — muda sozinho ao mexer em sexo,
+  nascimento, altura ou peso
+- na ficha do paciente, com o peso mais recente
+- na ficha de consulta, com o peso do dia
+
+O fator de atividade usa a **tabela do sexo do paciente** — a tabela do
+homem e a da mulher têm fatores diferentes, e antes o homem caía em
+sedentário. Cadastro sem sexo preenchido mostra aviso vermelho em vez de
+chutar: sem sexo não existe TMB. Se a ficha tiver um fator gravado que não
+está na tabela atual, ele aparece como "Gravado nesta ficha" em vez de
+desaparecer na hora de salvar.
+
+## Peso inicial e começo do processo
+
+No cadastro, **peso inicial** (kg ou lb, os dois convertem) e **data de
+início do processo**. A ficha mostra os dois numa linha, ao lado das
+pesagens — é o ponto zero da evolução, que antes só existia se houvesse
+consulta.
+
+## Alergias
+
+Dá para escrever no momento do cadastro e dá para editar depois, pelo mesmo
+campo. Salvando o cadastro a partir da ficha, o sistema **volta para a
+ficha** em vez de jogar na lista — ajuste de alergia no meio da consulta não
+custa mais a navegação de volta.
+
+Objetivo nunca mais é apagado ao salvar: valores que o paciente já tinha
+aparecem primeiro na lista, inclusive os que não estão no catálogo.
+
+## Desconto do app no contrato
+
+No contrato, **desconto (app)**. Logo abaixo o sistema mostra o **valor
+líquido** e quanto fica cada parcela — e é esse líquido que gera as
+parcelas, não o valor de tabela. Serve para o que a plataforma retém sem
+mexer no preço anunciado.
+
+## Situação do compromisso
+
+Na agenda, cinco situações, cada uma com sua cor: **Marcado** (âmbar),
+**Pendente montar o treino** (verde), **Pendente enviar o plano** (azul),
+**Realizado** (verde) e **Cancelado** (vermelho).
+
+## Perguntas do formulário: arrastar
+
+As perguntas se movem **arrastando pelo risquinho** do canto. Sem flechas:
+antes cada clique para cima redesenhava a lista e era preciso recomeçar.
+Pode incluir pergunta nova, editar e apagar as existentes. A renumeração
+mexe só no bloco arrastado, dentro da faixa de posições que ele já ocupava,
+então os outros idiomas não saem de ordem.
+
+## Anamnese pronta para o WebDiet
+
+O bloco da anamnese na ficha mostra **idade, peso (kg e lb) e altura (cm e
+pés/polegadas)** já convertidos, para cadastrar no WebDiet sem contas à
+parte. Data de nascimento sai em dia/mês/ano — não mais `AAAA-Mês-dia`. E
+tem **"Formulário enviado em"**, para saber de quando é aquele peso.
+
+## Unificar cadastros
+
+Configurações → **Unificar cadastros**. O sistema procura repetição por CPF,
+e-mail, telefone e por COD **dentro do mesmo país** — o mesmo COD existe nos
+dois formulários (BR e US) e são pessoas diferentes.
+
+**Nada vem marcado.** A base tem mãe e filha dividindo CPF, telefone e
+e-mail, e tem o mesmo COD em formulários diferentes: a decisão é de quem
+olha. Grupos com aviso ("pode ser pessoas diferentes") sobem para o topo, e
+**Marcar os sem aviso** deixa justamente esses de fora. **Conferir campos**
+mostra o que vai se mover (consultas, anamneses, contratos, anexos…) e, nos
+campos em que os cadastros divergem, qual valor fica.
+
+O que foi unido fica rastreado: `uniao_log` guarda lote, quem absorveu quem
+e o que se moveu; o cadastro que sobrou guarda `nomes_antigos` e
+`cods_antigos`, e **a busca acha pelo nome e pelo COD antigos** — quem
+procurar "Isa 1" continua achando a Isabella. A ficha mostra "Cadastros
+unidos neste".
+
+## Backup
+
+Configurações → **Baixar backup**. Gera um arquivo `.json` com as 24 tabelas
+do banco e a data de geração. **Senha e token de sessão não saem no
+backup** — o arquivo é montado no navegador, a partir da resposta
+autenticada da API, e não existe endereço público de backup.
 
 ## Ainda não entra nesta fase
 
