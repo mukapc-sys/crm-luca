@@ -632,6 +632,23 @@ sem paciente duplicado e sem segunda negociação aberta.
 Título, texto de abertura e mensagem de agradecimento saem de
 Configurações. São em português: em inglês a página usa os textos padrão.
 
+## Calculadora: o que "Salvar no cadastro" salva
+
+**Sexo, altura, calorias da dieta e o peso.** O peso vira **peso inicial** só
+quando o cadastro ainda não tem um — peso inicial é o ponto zero do processo,
+não a pesagem de hoje; essa é ficha de consulta. Junto vai a data de início,
+se ainda estiver vazia. O aviso que aparece diz nominalmente o que foi salvo,
+e a linha de cima da calculadora se atualiza na hora: deixa de dizer "sem peso
+registrado".
+
+A calculadora também aceita o peso inicial do cadastro como peso de partida.
+Paciente recém-cadastrado não tem ficha de consulta nenhuma, e antes disso o
+TMB não saía de jeito nenhum.
+
+Quando falta dado para o gasto energético, a ficha **diz o que falta e onde**
+("Falta peso no cadastro para calcular o gasto") em vez de mandar montar uma
+ficha de consulta que não é o caminho mais curto.
+
 ## Aviso de plano sem preço
 
 O catálogo de planos veio da planilha sem valor e com 30 dias chutados. Com

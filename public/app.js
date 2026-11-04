@@ -1486,6 +1486,13 @@ function energiaDoCadastro(p, pesoKg) {
   return { tmb, get: tmb * f, fator: f, idade, kg, semSexo: !p.sexo };
 }
 
+/* Último gasto energético calculado para a tela, venha da ficha de consulta
+   ou do cadastro. O campo de dieta precisa dele para dizer o saldo, e antes
+   ele só olhava a ficha: com TMB vindo do cadastro, o saldo dizia "sem gasto
+   energético" com o gasto escrito logo acima. */
+let GET_DA_TELA = null;
+let FALTA_PRA_ENERGIA = [];
+
 function blocoEnergia(p, ficha, pesoAtual) {
   let tmb = ficha && ficha.tmb ? Number(ficha.tmb) : null;
   let get = ficha && ficha.get_kcal ? Number(ficha.get_kcal) : null;
@@ -1495,6 +1502,8 @@ function blocoEnergia(p, ficha, pesoAtual) {
     if (e.tmb) { tmb = e.tmb; get = e.get; estimado = e; }
     else estimado = e;
   }
+  GET_DA_TELA = get;
+  FALTA_PRA_ENERGIA = (estimado && estimado.falta) || [];
   const s = saldoCalorico(p.dieta_kcal, get);
   const quando = ficha && ficha.data ? ` · da ficha de ${dataBR(ficha.data)}` : '';
   return `
@@ -1513,7 +1522,7 @@ function blocoEnergia(p, ficha, pesoAtual) {
         <b id="pSaldo">${s ? `<i>${SETA_SALDO[s.tipo]}</i> ${esc(saldoLegivel(s))}` : '—'}</b>
         <small id="pSaldoDet">${esc(s ? saldoDetalhe(s)
           : get ? 'Preencha as calorias da dieta.'
-          : 'Sem gasto energético ainda — preencha peso e altura numa ficha de consulta.')}</small>
+          : semGastoAinda())}</small>
       </div>
       <div class="obs"><span>${
         estimado && estimado.tmb
@@ -1524,16 +1533,26 @@ function blocoEnergia(p, ficha, pesoAtual) {
             ? `Falta ${estimado.falta.join(', ')} no cadastro para calcular.`
           : tmb || get
             ? `Calculado na última consulta${quando}. Peso novo muda esses números.`
-            : 'Os números aparecem assim que houver uma ficha de consulta com peso e altura.'}</span></div>
+            : 'Os números aparecem assim que o cadastro tiver peso, altura e nascimento'
+              + ' — ou quando houver uma ficha de consulta com peso.'}</span></div>
     </div>`;
 }
 
 /* Liga o campo de dieta da visão geral: salva no cadastro e repinta o saldo
    sem fechar a ficha, porque ele ajusta isso várias vezes seguidas. */
+/* Diz o que falta e onde resolver, em vez de mandar para a ficha de consulta
+   mesmo quando é o cadastro que está incompleto. */
+function semGastoAinda() {
+  if (FALTA_PRA_ENERGIA.length) {
+    return `Falta ${FALTA_PRA_ENERGIA.join(' e ')} no cadastro para calcular o gasto.`;
+  }
+  return 'Sem gasto energético ainda — preencha peso e altura no cadastro ou numa ficha de consulta.';
+}
+
 function ligarDietaPaciente(p, ficha) {
   const campo = $('#pDieta');
   if (!campo) return;
-  const get = ficha && ficha.get_kcal ? Number(ficha.get_kcal) : null;
+  const get = GET_DA_TELA ?? (ficha && ficha.get_kcal ? Number(ficha.get_kcal) : null);
   const botao = $('#pDietaSalvar');
   const original = String(p.dieta_kcal ?? '');
 
@@ -1543,7 +1562,7 @@ function ligarDietaPaciente(p, ficha) {
     $('#pSaldo').innerHTML = s ? `<i>${SETA_SALDO[s.tipo]}</i> ${esc(saldoLegivel(s))}` : '—';
     $('#pSaldoDet').textContent = s ? saldoDetalhe(s)
       : get ? 'Preencha as calorias da dieta.'
-      : 'Sem gasto energético ainda — preencha peso e altura numa ficha de consulta.';
+      : semGastoAinda();
     botao.classList.toggle('hide', String(campo.value) === original);
   };
   campo.oninput = repintar;
@@ -2971,21 +2990,16 @@ async function abrirCalculadora(pacienteId, de = {}) {
   const sexo0 = (p && p.sexo) || 'F';
   // vindo da ficha, a idade é a da data daquela consulta
   const idade0 = p ? idadePor(p.nascimento, de.data || undefined) : null;
-  const pesoSalvo = ultima ? ultima.peso_kg : null;
+  /* O peso inicial do cadastro também serve: paciente recém-cadastrado ainda
+     não tem ficha de consulta, e sem peso nenhum o TMB não sai. */
+  const pesoSalvo = ultima ? ultima.peso_kg : (Number(p && p.peso_inicial_kg) || null);
   const peso0 = Number(de.peso) > 0 ? Number(de.peso) : pesoSalvo;
   const alt0 = p && p.altura_cm ? p.altura_cm : null;
 
   const corpo = `
-    ${p ? `<div class="card" style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-      <div style="flex:1;min-width:0"><b>${esc(p.nome)}</b>${p.apelido ? ` <span class="apelido">“${esc(p.apelido)}”</span>` : ''}
-        <div style="font-size:12.5px;color:var(--txt-2)">
-          ${idade0 ? idade0 + ' anos' : '<b style="color:var(--erro)">sem data de nascimento</b>'} ·
-          ${alt0 ? alt0 + ' cm' : '<b style="color:var(--erro)">sem altura</b>'} ·
-          ${Number(de.peso) > 0 ? de.peso + ' kg (digitado na ficha)'
-            : pesoSalvo ? pesoSalvo + ' kg (ficha de ' + dataBR(ultima.data) + ')'
-            : '<b style="color:var(--erro)">sem peso registrado</b>'}
-        </div></div>
-      <button class="btn ghost mini" onclick="if(fecharModal())formPaciente(${p.id})">Completar cadastro</button>
+    ${p ? `<div class="card" id="kCabecalho"
+      style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      ${resumoCalc(p, idade0, alt0, peso0, ultima, de)}
     </div>` : ''}
 
     <div class="grid g2">
@@ -3119,14 +3133,69 @@ async function abrirCalculadora(pacienteId, de = {}) {
     toast('Peso, nível e calorias levados para a ficha');
   };
 
+  /* O botão diz "Salvar no cadastro", então salva o que está na tela — antes
+     guardava só sexo e altura e jogava fora justamente o peso, que é o dado
+     que faz o TMB aparecer na ficha. O peso vira peso inicial só quando o
+     cadastro ainda não tem um: peso inicial é o ponto zero do processo, não
+     a pesagem de hoje (essa é ficha de consulta). */
   if (p) $('#kSalvar').onclick = async () => {
+    const kg = Number(el('kKg').value) || null;
+    const cm = Number(el('kCm').value) || null;
+    const dieta = el('kDieta').value === '' ? null : Number(el('kDieta').value);
+    const viraInicial = kg && !Number(p.peso_inicial_kg);
     try {
       await api('/pacientes/' + p.id, { method: 'PUT', body: {
-        ...p, sexo: el('kSexo').value, altura_cm: el('kCm').value || null } });
-      toast('Sexo e altura salvos na ficha');
+        ...p, sexo: el('kSexo').value, altura_cm: cm, dieta_kcal: dieta,
+        peso_inicial_kg: viraInicial ? kg : (p.peso_inicial_kg || null),
+        inicio_em: viraInicial && !p.inicio_em ? hojeISO() : (p.inicio_em || null) } });
+
+      const salvos = ['sexo'];
+      if (cm) salvos.push('altura');
+      if (viraInicial) salvos.push('peso inicial');
+      if (dieta) salvos.push('calorias da dieta');
+      toast('Salvo no cadastro: ' + salvos.join(', '));
+
       CACHE.pacientes = null;
+      // o cabeçalho ainda dizia "sem peso registrado" depois de salvar
+      Object.assign(p, { sexo: el('kSexo').value, altura_cm: cm, dieta_kcal: dieta,
+        peso_inicial_kg: viraInicial ? kg : p.peso_inicial_kg,
+        inicio_em: viraInicial && !p.inicio_em ? hojeISO() : p.inicio_em });
+      const cab = $('#kCabecalho');
+      if (cab) cab.innerHTML = resumoCalc(p, idade0, cm, kg, ultima, de);
+      if (TELA === 'pacientes') CACHE.pacientes = null;
     } catch (e) { toast(e.message); }
   };
+
+  /* Não some com o que ele acabou de digitar sem avisar: se o modal recusar
+     fechar (guarda de alteração), o clique antes não fazia nada e ele ficava
+     sem entender. */
+  window.irParaCadastro = (id) => {
+    if (fecharModal()) { formPaciente(id, 1); return; }
+    toast('Feche ou salve a calculadora primeiro');
+  };
+}
+
+/* A linha de cima da calculadora: idade, altura e peso que o sistema já tem.
+   Fica numa função só porque precisa ser repintada depois de salvar. */
+function resumoCalc(p, idade, cm, kg, ultima, de = {}) {
+  const alt = cm || p.altura_cm;
+  const pesoFicha = Number(de.peso) > 0 ? Number(de.peso) : null;
+  const pesoUlt = ultima ? ultima.peso_kg : null;
+  const ini = Number(p.peso_inicial_kg) || null;
+  const peso = pesoFicha
+    ? `${pesoFicha} kg (digitado na ficha)`
+    : pesoUlt ? `${pesoUlt} kg (ficha de ${dataBR(ultima.data)})`
+    : ini ? `${ini} kg (peso inicial)`
+    : '<b style="color:var(--erro)">sem peso registrado</b>';
+  return `
+    <div style="flex:1;min-width:0"><b>${esc(p.nome)}</b>${p.apelido
+      ? ` <span class="apelido">“${esc(p.apelido)}”</span>` : ''}
+      <div style="font-size:12.5px;color:var(--txt-2)">
+        ${idade ? idade + ' anos' : '<b style="color:var(--erro)">sem data de nascimento</b>'} ·
+        ${alt ? alt + ' cm' : '<b style="color:var(--erro)">sem altura</b>'} ·
+        ${peso}
+      </div></div>
+    <button class="btn ghost mini" onclick="irParaCadastro(${p.id})">Completar cadastro</button>`;
 }
 
 /* ==========================================================
